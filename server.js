@@ -163,10 +163,8 @@ async function startWhatsAppSocket() {
           if (!orderMsg && (!text || !text.trim())) continue;
 
           try {
-            // Human touch: Show "typing..." presence for 1.2s
-            await sock.sendPresenceUpdate('composing', senderJid);
-            await new Promise(res => setTimeout(res, 1200));
-            await sock.sendPresenceUpdate('paused', senderJid);
+            // Instant typing presence in background (non-blocking)
+            sock.sendPresenceUpdate('composing', senderJid).catch(() => {});
 
             let reply = null;
             if (orderMsg) {

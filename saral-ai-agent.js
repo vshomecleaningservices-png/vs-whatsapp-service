@@ -460,26 +460,40 @@ Website: vshomecleaningservices.in
 ${bookingInfo}
 
 Catalog & Starting Rates:
-- Classic Bathroom Cleaning: ₹499 per bathroom
-- Kitchen Deep Cleaning: ₹799
+- Bathroom Cleaning Packages: Classic ₹499 | Premium ₹549 | Eco-Smart ₹599 (per bathroom)
+- Kitchen Deep Cleaning: Starting from ₹799 (Chimney, stove, oil stains, tiles)
 - Sofa Shampoo & Sanitization: ₹699 (3 to 5 seater), ₹899 (6-7 seater)
 - Full Home Deep Cleaning: 1BHK ₹1499, 2BHK ₹1999, 3BHK ₹2499
 - Balcony & Window Cleaning: ₹499
 - Add-on services (cupboards, fridge, fans, lofts): from ₹69
 Terms: Zero advance, 100% pay after service (Cash or UPI). Safe eco-friendly Diversey solutions (zero acid, child & pet safe).
 
-YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
-1. Speak like a real, witty, caring human in Tamil, Indian English, or Tanglish — seamlessly match what the customer speaks.
-2. Casual chatter & greetings ("Saptiya", "Saptingala", "Hi", "Eppadi irukinga", "Good morning", "Enna panreenga"):
-   Reply with authentic Tamil warmth and gentle humor! (e.g. "இன்னும் சாப்பிடலங்க! நீங்க சாப்டீங்களா? 😊 உங்க வீட்ல ஏதாச்சும் கிளீனிங் வேலை பண்ணனுமா சொல்லுங்க, நான் பார்த்துக்கிறேன்!"). NEVER treat greetings or casual questions as addresses!
-3. Customer asks about existing booking / "Where is my cleaner" / "Partner not arrived" / "Delay":
-   - Use the CUSTOMER EXISTING BOOKING info above!
-   - Warmly reassure the customer: mention their Ref ID, scheduled slot, and the assigned specialist's name.
-   - If they report cleaner has not arrived or is late, say: "I have just sent an urgent priority dispatch alert to specialist ${activePartnerName || 'our team'} to reach your home immediately!" and append tag [ALERT_PARTNER: true] so our backend notifies the partner.
-4. Booking a new service:
-   Smoothly collect: (1) Services & count, (2) Chennai Area / Flat address & PIN, (3) Date & Slot.
-   Once all 3 are gathered and customer confirms with "Confirm" or "Yes", output:
-   [CREATE_BOOKING: {"services": "...", "total": 1499, "address": "...", "date": "...", "time": "..."}]
+YOUR CONVERSATIONAL INTELLIGENCE & ROLE:
+You are an expert, warm, human-like Customer Support & Operations Problem Solver — NOT a rigid booking robot.
+
+1. Casual chatter & greetings ("Saptiya", "Saptingala", "Hi", "Eppadi irukinga", "Good morning", "Enna pandra"):
+   Reply with authentic Tamil warmth and gentle humor! (e.g. "வணக்கம்! இன்னும் சாப்பிடலங்க, நீங்க சாப்டீங்களா? 😊 உங்களுக்கு நான் எப்படி உதவலாம் சொல்லுங்க!"). NEVER ask for address or slot for casual talk!
+
+2. Booking Inquiries, Rate Cards, Packages & "I want to book":
+   Do NOT confuse or interrogate customers with endless back-and-forth text questions!
+   Instead, politely give starting prices and guide them to visually choose from our WhatsApp Catalog / Cart or Website:
+   - In Tamil:
+     "கண்டிப்பாங்க! நம்மகிட்ட பாத்ரூம் (Classic ₹499 | Premium ₹549 | Eco-Smart ₹599), கிச்சன் (₹799), சோபா மற்றும் முழு வீடு கிளீனிங்கிற்கு முழுமையான பேக்கேஜ்கள் உள்ளன.
+     நீங்கள் நேரடியாக நம்ம வாட்ஸ்அப் மேலே உள்ள **Store / Catalog (🛍️)** ஐகானை க்ளிக் செய்து அனைத்து பேக்கேஜ்களையும் படங்களுடன் பார்த்து கார்ட்டில் (Cart) புக் செய்யலாம்! அல்லது நம்ம வெப்சைட்டான **vshomecleaningservices.in**-லும் புக் செய்யலாம்.
+     கார்ட் அல்லது வெப்சைட்டில் ஆர்டர் போட்ட அடுத்த நொடி, உங்களுக்கான Order ID உருவாக்கப்பட்டு நான் அதை உறுதி செய்கிறேன்! ஏதேனும் சந்தேகம் உள்ளதா? 😊"
+   - In English:
+     "Certainly! You can easily explore our full packages with photos and transparent prices in our **WhatsApp Catalog (🛍️ icon at the top)** or on our website **vshomecleaningservices.in**! Simply add your services to Cart and order. Once placed, I will instantly confirm your Order ID and assign a specialist. Can I help you with any questions? 😊"
+
+3. Order Tracking / "Where is my cleaner" / "Partner not arrived" / "Delay" / "Late":
+   - Use the CUSTOMER EXISTING BOOKING info from database!
+   - Report their Order Ref, Scheduled Slot, and Assigned Specialist name.
+   - If they report cleaner has not arrived, say: "I have just sent an urgent priority dispatch alert to specialist ${activePartnerName || 'our team'} to reach your home immediately!" and append [ALERT_PARTNER: true] so our backend alerts the partner.
+
+4. Cancellation, Rescheduling & Support:
+   - Help customers modify slots or cancel with empathy.
+   - Diversey eco-friendly safe chemicals (zero acid, pet & kid safe).
+   - Zero advance, 100% pay after service (Cash or UPI).
+
 5. Never say "Founder" or "Owner" (refer only to "Senior Operations Manager" or "Executive Support Team").
 `.trim();
 
@@ -520,47 +534,56 @@ YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
       }
     }
 
-    // 2. Google Gemini (1.5 Flash / 2.0 Flash)
+    // 2. Google Gemini 3.8 Flash (Instant Direct Call)
+    // Strictly validate multiturn history to prevent Google alternating role errors
+    const validHistory = [];
+    let expectedRole = 'user';
+    for (const item of (session.history || [])) {
+      if (item && item.role === expectedRole && item.parts?.[0]?.text) {
+        validHistory.push(item);
+        expectedRole = expectedRole === 'user' ? 'model' : 'user';
+      }
+    }
+    if (validHistory.length > 0 && validHistory[validHistory.length - 1].role === 'user') {
+      validHistory.pop();
+    }
+
     const contents = [
-      ...session.history.slice(-8),
+      ...validHistory.slice(-6),
       { role: 'user', parts: [{ text: userMessage }] }
     ];
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-    for (const modelName of modelsToTry) {
-      try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey
+    const modelName = 'gemini-3.8-flash';
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemInstruction }]
           },
-          body: JSON.stringify({
-            system_instruction: {
-              parts: [{ text: systemInstruction }]
-            },
-            contents,
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 350
-            }
-          })
-        });
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 250
+          }
+        })
+      });
 
-        const data = await res.json();
-        console.log(`[Gemini HTTP ${res.status} for ${modelName}]:`, JSON.stringify(data).slice(0, 160));
-
-        const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (replyText) {
-          session.history.push({ role: 'user', parts: [{ text: userMessage }] });
-          session.history.push({ role: 'model', parts: [{ text: replyText }] });
-          return replyText;
-        } else if (data.error) {
-          console.log(`[Gemini ${modelName} notice]:`, data.error.message || data.error);
-        }
-      } catch (e) {
-        console.error(`Gemini fetch error on ${modelName}:`, e.message);
+      const data = await res.json();
+      const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (replyText) {
+        session.history.push({ role: 'user', parts: [{ text: userMessage }] });
+        session.history.push({ role: 'model', parts: [{ text: replyText }] });
+        return replyText;
+      } else if (data.error) {
+        console.log(`[Gemini notice]:`, data.error.message || data.error);
       }
+    } catch (e) {
+      console.error(`Gemini fetch error:`, e.message);
     }
   } catch (err) {
     console.error('LLM call error:', err);
@@ -845,81 +868,36 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     }
   }
 
-  // CASE A: User provided a Date (e.g. "I need service for next month 13th") but NO service yet!
-  if (session.date && session.services.length === 0) {
-    session.stage = 'choosing';
-    const formattedDate = session.dateLabel || session.date;
-    return `Got it! Date: **${formattedDate}** is noted! 📅✨\n\n` +
-      `Which service would you like us to schedule for that day?\n` +
-      `1️⃣ *Classic Bathroom Cleaning* (₹499)\n` +
-      `2️⃣ *Kitchen Deep Cleaning* (₹799)\n` +
-      `3️⃣ *Sofa Shampoo & Sanitization* (₹699)\n` +
-      `4️⃣ *Full Home Deep Cleaning* (1BHK ₹1499 | 2BHK ₹1999)\n` +
-      `5️⃣ *Balcony & Glass Windows* (₹499)\n\n` +
-      `Just reply with the service name or number (e.g. *"Bathroom"* or *"4 and 5"*). 😊`;
-  }
-
-  // CASE B: First Greeting (Sent ONLY ONCE!)
-  if (!session.greeted && session.services.length === 0) {
-    session.greeted = true;
-    session.stage = 'choosing';
-    const custName = session.name ? ` ${session.name}` : '';
-
-    return `Hello${custName}! 👋 I'm **Saral**, your personal booking assistant from **VS Home Cleaning Services**, Chennai! 🧹✨\n\n` +
-      `Our Top Popular Services:\n` +
-      `1️⃣ *Classic Bathroom Cleaning* (₹499)\n` +
-      `2️⃣ *Kitchen Deep Cleaning* (₹799)\n` +
-      `3️⃣ *Sofa Shampoo & Sanitization* (₹699)\n` +
-      `4️⃣ *Full Home Deep Cleaning* (1BHK ₹1499 | 2BHK ₹1999)\n` +
-      `5️⃣ *Balcony & Glass Windows* (₹499)\n\n` +
-      `Which service would you like to book? Just reply with the number or name (e.g. *"1 and 3"* or *"Bathroom"*). 😊`;
-  }
-
-  // CASE C: Services selected, but Address missing -> Ask for Address
-  if (session.services.length > 0 && !session.address) {
-    session.stage = 'asking_location';
-    const total = session.services.reduce((sum, s) => sum + s.price, 0);
-    const items = session.services.map((s, i) => `${i + 1}️⃣ *${s.name}* (₹${s.price})`).join('\n');
-
-    return `Great choice! 👍\n\nSelected Services:\n${items}\n💰 *Total Amount:* ₹${total} (Zero advance, Pay After Service)\n\n` +
-      `Where should our specialist arrive? Please share your **Chennai Area, Street / Flat number & PIN Code** (e.g. *Anna Nagar West, Flat 3B, 600040*).`;
-  }
-
-  // CASE D: Services and Address present, but Slot missing -> Ask for Slot
-  if (session.services.length > 0 && session.address && (!session.date || !session.time)) {
-    session.stage = 'asking_slot';
-    const dateMention = session.date ? `on **${session.dateLabel || session.date}**` : '';
-
-    return `Got it! Verified specialists available for **${session.address}**. ✅\n\n` +
-      `What time slot suits you best ${dateMention}?\n` +
-      `🌅 *Morning:* 08:00 AM - 10:00 AM\n` +
-      `☀️ *Morning:* 10:00 AM - 12:00 PM\n` +
-      `🌤️ *Afternoon:* 02:00 PM - 04:00 PM\n` +
-      `🌆 *Evening:* 04:00 PM - 06:00 PM\n\n` +
-      `Let me know your preferred slot (e.g. *"Morning 10 to 12"*).`;
-  }
-
-  // CASE E: Everything present -> Show Final Confirmation Summary
-  if (session.services.length > 0 && session.address && session.date && session.time) {
-    session.stage = 'confirming';
-    const total = session.services.reduce((sum, s) => sum + s.price, 0);
-    const serviceList = session.services.map(s => s.name).join(' + ');
-    const custName = session.name || 'Sir / Madam';
-
-    return `Awesome! Here is your booking summary:\n\n` +
-      `🛠️ *Services:* ${serviceList}\n` +
-      `💰 *Total Amount:* ₹${total} (100% Pay After Service)\n` +
-      `📍 *Address:* ${session.address}\n` +
-      `📅 *Slot:* ${session.date} (${session.time})\n` +
-      `👤 *Customer:* ${custName}\n\n` +
-      `Shall I confirm this booking? Please reply **"Confirm"** or **"Yes"**! 😊`;
+  // CASE B: Catalog & Store Guidance (Clear, non-pushy, zero confusion)
+  if (lower.includes('service') || lower.includes('package') || lower.includes('book') || lower.includes('bathroom') || lower.includes('kitchen') || lower.includes('sofa') || lower.includes('clean')) {
+    if (isTamil) {
+      return `வணக்கம்! 🙏\n\nநம்ம VS Home Cleaning-ல் பாத்ரூம் (Classic ₹499, Premium ₹549, Eco-Smart ₹599), கிச்சன் டீப் கிளீனிங் (₹799), சோபா மற்றும் முழு வீடு கிளீனிங்கிற்கு விரிவான பேக்கேஜ்கள் உள்ளன.\n\n` +
+        `🛍️ **எளிய முன்பதிவு (Easy Visual Booking):**\n` +
+        `நீங்கள் குழப்பமே இல்லாமல், அனைத்து பேக்கேஜ்களையும் படங்களுடன் பார்த்து புக் செய்ய:\n` +
+        `1️⃣ மேலே உள்ள **WhatsApp Store / Catalog (🛍️)** ஐகானை க்ளிக் செய்து கார்ட்டில் (Cart) ஆட் செய்து ஆர்டர் அனுப்பலாம்!\n` +
+        `2️⃣ அல்லது நம்முடைய அதிகாரப்பூர்வ வெப்சைட்டான **https://vshomecleaningservices.in**-ல் 1 நிமிடத்தில் புக் செய்யலாம்.\n\n` +
+        `நீங்கள் கார்ட் அல்லது வெப்சைட்டில் ஆர்டர் போட்ட அடுத்த நொடி, உங்களுக்கான **Order ID** உருவாக்கப்பட்டு எங்கள் ஸ்பெஷலிஸ்ட் ஒதுக்கப்படுவார்!\n\n` +
+        `ஏதேனும் சந்தேகம் உள்ளதா அல்லது ஏதேனும் உதவி தேவையா? தயங்காமல் கேளுங்கள்! 😊`;
+    } else {
+      return `Hello! 🙏\n\nWe offer complete transparent packages for Bathroom (Classic ₹499, Premium ₹549, Eco-Smart ₹599), Kitchen Deep Clean (₹799), Sofa, and Full Home Deep Cleaning.\n\n` +
+        `🛍️ **Easy Visual Booking:**\n` +
+        `To easily choose your exact package with photos and details:\n` +
+        `1️⃣ Tap the **WhatsApp Store / Catalog (🛍️ icon at the top)**, add your services to Cart, and place your order directly!\n` +
+        `2️⃣ Or book in 1 minute on our website: **https://vshomecleaningservices.in**\n\n` +
+        `Once you place your order from the Cart or Website, your **Order ID** is instantly confirmed and our specialist is assigned!\n\n` +
+        `Do you have any questions or need any help with services? Feel free to ask! 😊`;
+    }
   }
 
   // Fallback polite inquiry
   if (isTamil) {
-    return `வணக்கம்! நான் VS Home Cleaning-ன் உதவியாளர் **சாரல்**. 🌸\n\nநீங்கள் புதிய புக்கிங் செய்ய விரும்புகிறீர்களா, அல்லது ஏற்கனவே பதிவு செய்த ஆர்டர் பற்றிய விவரங்கள் (ஆர்டர் நிலை, பார்ட்னர் விவரம்) தேவையா? தயங்காமல் சொல்லுங்கள், நான் உதவுகிறேன்! 😊`;
+    return `வணக்கம்! நான் VS Home Cleaning-ன் AI உதவியாளர் **சாரல்**. 🌸\n\n` +
+      `🛍️ **புதிய சர்வீஸ் புக் செய்ய:** மேலே உள்ள **WhatsApp Catalog (🛍️)** அல்லது நம்ம வெப்சைட்டான **https://vshomecleaningservices.in**-ல் எளிதாக கார்ட்டில் புக் செய்யலாம்!\n\n` +
+      `📋 **ஆர்டர் உதவி & ட்ராக்கிங்:** ஏற்கனவே உள்ள புக்கிங் நிலை, கிளீனர் எங்கே இருக்கிறார், அல்லது வேறு ஏதேனும் பிரச்சனைகள் இருப்பின் உங்கள் **Order Reference ID (VS-XXXXXX)** அல்லது சந்தேகங்களை இங்கு பகிருங்கள், நான் உடனடியாக உதவுகிறேன்! 😊`;
   }
-  return `Hello! I'm **Saral** from VS Home Cleaning Services. 🌸\n\nWould you like to schedule a new cleaning service, or do you need details/status on an existing booking? Please let me know and I'll assist you right away! 😊`;
+  return `Hello! I'm **Saral**, Chief Operations AI Assistant at VS Home Cleaning Services. 🌸\n\n` +
+    `🛍️ **To Book Services:** Simply browse our **WhatsApp Catalog (🛍️ icon at the top)** or visit **https://vshomecleaningservices.in** to add packages to your Cart and book in seconds!\n\n` +
+    `📋 **Order Support & Tracking:** If you need help with an existing booking, tracking your specialist, rescheduling, or any assistance, just share your **Order ID (VS-XXXXXX)** or ask me here. I'm right here to help! 😊`;
 }
 
 /**
