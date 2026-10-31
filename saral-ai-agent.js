@@ -484,39 +484,81 @@ YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
 `.trim();
 
   try {
+    // 1. If key is from xAI Grok (starts with xai-)
+    if (apiKey.startsWith('xai-')) {
+      const messages = [
+        { role: 'system', content: systemInstruction },
+        ...session.history.slice(-8).map(h => ({
+          role: h.role === 'model' ? 'assistant' : 'user',
+          content: h.parts?.[0]?.text || ''
+        })),
+        { role: 'user', content: userMessage }
+      ];
+
+      const res = await fetch('https://api.x.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'grok-beta',
+          messages,
+          temperature: 0.7,
+          max_tokens: 350
+        })
+      });
+
+      const data = await res.json();
+      const replyText = data.choices?.[0]?.message?.content;
+      if (replyText) {
+        session.history.push({ role: 'user', parts: [{ text: userMessage }] });
+        session.history.push({ role: 'model', parts: [{ text: replyText }] });
+        return replyText;
+      } else {
+        console.log('xAI Grok API error:', data);
+      }
+    }
+
+    // 2. Google Gemini (1.5 Flash / 2.0 Flash)
     const contents = [
-      { role: 'user', parts: [{ text: systemInstruction }] },
-      { role: 'model', parts: [{ text: 'Vanakkam! I am Saaral, ready to help customers with human warmth and intelligence.' }] },
       ...session.history.slice(-8),
       { role: 'user', parts: [{ text: userMessage }] }
     ];
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 350
-        }
-      })
-    });
+    const modelsToTry = ['gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+    for (const modelName of modelsToTry) {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            system_instruction: {
+              parts: [{ text: systemInstruction }]
+            },
+            contents,
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 350
+            }
+          })
+        });
 
-    const data = await res.json();
-    const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (replyText) {
-      session.history.push({ role: 'user', parts: [{ text: userMessage }] });
-      session.history.push({ role: 'model', parts: [{ text: replyText }] });
-      return replyText;
-    } else {
-      console.log('Gemini API response warning:', data.error || data);
+        const data = await res.json();
+        const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (replyText) {
+          session.history.push({ role: 'user', parts: [{ text: userMessage }] });
+          session.history.push({ role: 'model', parts: [{ text: replyText }] });
+          return replyText;
+        } else if (data.error) {
+          console.log(`[Gemini ${modelName} notice]:`, data.error.message || data.error);
+        }
+      } catch (e) {}
     }
   } catch (err) {
-    console.error('Gemini Flash call error:', err);
+    console.error('LLM call error:', err);
   }
   return null;
 }
