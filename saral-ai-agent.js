@@ -429,8 +429,8 @@ async function saveBookingToFirebase(session) {
 /**
  * Call Google Gemini 2.0 Flash for True Human Conversational Intelligence
  */
-async function callGeminiFlash(session, userMessage, customerBookings = []) {
-  const apiKey = process.env.GEMINI_API_KEY || GEMINI_API_KEY;
+async function callGeminiFlash(session, userMessage, customerBookings = [], customApiKey = null) {
+  const apiKey = (customApiKey || process.env.GEMINI_API_KEY || GEMINI_API_KEY || '').trim();
   if (!apiKey) return null;
 
   let bookingInfo = "No previous booking found for this customer phone.";
@@ -526,13 +526,14 @@ YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
       { role: 'user', parts: [{ text: userMessage }] }
     ];
 
-    const modelsToTry = ['gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+    const modelsToTry = ['gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
     for (const modelName of modelsToTry) {
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
           },
           body: JSON.stringify({
             system_instruction: {
@@ -547,6 +548,8 @@ YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
         });
 
         const data = await res.json();
+        console.log(`[Gemini HTTP ${res.status} for ${modelName}]:`, JSON.stringify(data).slice(0, 160));
+
         const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (replyText) {
           session.history.push({ role: 'user', parts: [{ text: userMessage }] });
@@ -555,7 +558,9 @@ YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
         } else if (data.error) {
           console.log(`[Gemini ${modelName} notice]:`, data.error.message || data.error);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`Gemini fetch error on ${modelName}:`, e.message);
+      }
     }
   } catch (err) {
     console.error('LLM call error:', err);
@@ -577,12 +582,13 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   const p10 = String(session.customerPhone || phone || '').replace(/\D/g, '').slice(-10);
   const customerBookings = await findCustomerBookings(p10);
+  const activeApiKey = (process.env.GEMINI_API_KEY || process.env.XAI_API_KEY || GEMINI_API_KEY || '').trim();
 
   // -------------------------------------------------------------
-  // ATTEMPT 1: Google Gemini 2.0 Flash (If API Key is provided)
+  // ATTEMPT 1: Google Gemini Flash / LLM (If API Key is provided)
   // -------------------------------------------------------------
-  if (GEMINI_API_KEY) {
-    const geminiReply = await callGeminiFlash(session, text, customerBookings);
+  if (activeApiKey) {
+    const geminiReply = await callGeminiFlash(session, text, customerBookings, activeApiKey);
     if (geminiReply) {
       // Check if partner alert is triggered
       if (geminiReply.includes('[ALERT_PARTNER: true]') && customerBookings.length > 0) {
