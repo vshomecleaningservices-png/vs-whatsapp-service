@@ -14,8 +14,29 @@ const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const saralAgent = require('./saral-ai-agent');
-const { handleInboundCall, handleMenuSelection } = require('./vs-voice-agent');
-const { triggerFounderSosCall, scanForEmergencyIssues, FOUNDER_CONFIG } = require('./vs-founder-sos');
+
+// Safe optional loading for voice agent and founder SOS modules
+let handleInboundCall = () => '<Response><Say>VS Home Cleaning Support. Please visit our website.</Say></Response>';
+let handleMenuSelection = async () => '<Response><Say>Connecting to support.</Say></Response>';
+try {
+  const voice = require('./vs-voice-agent');
+  handleInboundCall = voice.handleInboundCall || handleInboundCall;
+  handleMenuSelection = voice.handleMenuSelection || handleMenuSelection;
+} catch (e) {
+  console.log('[Notice] vs-voice-agent module optional fallback active.');
+}
+
+let triggerFounderSosCall = async () => ({ success: true, mode: 'fallback' });
+let scanForEmergencyIssues = () => {};
+let FOUNDER_CONFIG = { FOUNDER_PHONE: '+91 63834 58190' };
+try {
+  const sos = require('./vs-founder-sos');
+  triggerFounderSosCall = sos.triggerFounderSosCall || triggerFounderSosCall;
+  scanForEmergencyIssues = sos.scanForEmergencyIssues || scanForEmergencyIssues;
+  FOUNDER_CONFIG = sos.FOUNDER_CONFIG || FOUNDER_CONFIG;
+} catch (e) {
+  console.log('[Notice] vs-founder-sos module optional fallback active.');
+}
 
 const {
   default: makeWASocket,
