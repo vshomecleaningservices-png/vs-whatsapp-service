@@ -14,6 +14,8 @@ const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const saralAgent = require('./saral-ai-agent');
+const { handleInboundCall, handleMenuSelection } = require('./vs-voice-agent');
+const { triggerFounderSosCall, scanForEmergencyIssues, FOUNDER_CONFIG } = require('./vs-founder-sos');
 
 const {
   default: makeWASocket,
@@ -130,12 +132,14 @@ async function startWhatsAppSocket() {
       for (const msg of m.messages) {
         if (!msg.key.fromMe && msg.key.remoteJid && !msg.key.remoteJid.includes('@g.us')) {
           const senderJid = msg.key.remoteJid;
-          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || '';
-          if (!text || !text.trim()) continue;
-
           const senderPhone = senderJid.split('@')[0];
           const pushName = msg.pushName || '';
-          console.log(`\n💬 [Incoming WhatsApp from ${pushName || senderPhone} (${senderJid})]: "${text}"`);
+
+          // Check for WhatsApp Native Cart / Catalog Order
+          const orderMsg = msg.message?.orderMessage || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.orderMessage;
+          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || '';
+
+          if (!orderMsg && (!text || !text.trim())) continue;
 
           try {
             // Human touch: Show "typing..." presence for 1.2s
@@ -143,18 +147,24 @@ async function startWhatsAppSocket() {
             await new Promise(res => setTimeout(res, 1200));
             await sock.sendPresenceUpdate('paused', senderJid);
 
-            // Process message through Saral's conversational brain
-            const reply = await saralAgent.processCustomerMessage(
-              senderPhone,
-              text,
-              pushName,
-              (to, alertText) => sendWhatsAppMessage(to, alertText)
-            );
+            let reply = null;
+            if (orderMsg) {
+              console.log(`\n🛒 [Incoming WhatsApp Cart Order from ${pushName || senderPhone}]: ${orderMsg.itemCount} items, total: ${orderMsg.totalAmount1000}`);
+              reply = await saralAgent.handleCartOrder(senderPhone, orderMsg, pushName);
+            } else {
+              console.log(`\n💬 [Incoming WhatsApp from ${pushName || senderPhone} (${senderJid})]: "${text}"`);
+              reply = await saralAgent.processCustomerMessage(
+                senderPhone,
+                text,
+                pushName,
+                (to, alertText) => sendWhatsAppMessage(to, alertText)
+              );
+            }
 
             if (reply) {
               await sock.sendMessage(senderJid, { text: reply });
               console.log(`🤖 [Saral Replied to ${senderPhone}]:\n${reply.split('\n')[0]}...`);
-              logDispatch('Saral AI Chat', senderPhone, `Replied to: "${text.slice(0, 30)}"`, 'Delivered');
+              logDispatch(orderMsg ? 'Cart Order Reply' : 'Saral AI Chat', senderPhone, `Replied to: "${(text || 'Cart Order').slice(0, 30)}"`, 'Delivered');
             }
           } catch (e) {
             console.error('Saral conversational reply failed:', e);
@@ -320,8 +330,9 @@ app.post('/api/send-confirmation', async (req, res) => {
       `📍 *Address:* ${address}\n\n` +
       `⚡ *Admin Dashboard:* https://vshomecleaningservices.in/admin.html`;
 
-    await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
-    logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
+    // Admin WhatsApp Alert disabled per founder preference (Only voice/SOS calls alert founder)
+    // await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
+    // logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
 
     res.json({ success: true, ref, customerPhone: phone, result: custResult });
   } catch (err) {
@@ -332,6 +343,63 @@ app.post('/api/send-confirmation', async (req, res) => {
 // -------------------------------------------------------------
 // 2. API: PARTNER ASSIGNED ALERT
 // -------------------------------------------------------------
+app.post('/api/order-partner-check', async (req, res) => {
+  try {
+    const ref = (req.body.ref || req.body.order_id || req.query.ref || '').trim().toUpperCase();
+    if (!ref) return res.status(400).json({ found: false, error: 'Order reference required' });
+
+    const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings/${ref}.json`);
+    const booking = await fbRes.json();
+
+    if (!booking) {
+      return res.json({
+        found: false,
+        ref,
+        message: `Booking ${ref} not found in database.`
+      });
+    }
+
+    const partnerName = booking.assignedPartnerName || booking.assignedName || null;
+    const partnerPhone = booking.assignedPartnerMobile || booking.assignedMobile || null;
+
+    if (partnerName) {
+      // Trigger instant urgent WhatsApp alert to the assigned partner
+      if (partnerPhone) {
+        const pClean = normalizePhone(partnerPhone);
+        const urgentMsg = `🚨 *URGENT CUSTOMER ENQUIRY — ACTION REQUIRED* 🚨\n\n` +
+          `வணக்கம் *${partnerName}*!\n` +
+          `புக்கிங் *${ref}* கஸ்டமர் உங்களுக்காக வீட்டில் காத்திருக்கிறார்கள்.\n` +
+          `📍 முகவரி: ${booking.address || 'Chennai'}\n` +
+          `🛠️ சர்வீஸ்: ${booking.serviceType}\n\n` +
+          `தயவுசெய்து உடனடியாக வாடிக்கையாளரின் வீட்டிற்கு செல்லவும்! தாமதத்திற்கான காரணத்தை உடனே அட்மினிடம் தெரிவிக்கவும்.`;
+        await sendWhatsAppMessage(pClean, urgentMsg);
+        logDispatch('Urgent Partner Reminder', pClean, `Expedite: ${ref}`, 'Delivered');
+      }
+
+      return res.json({
+        found: true,
+        ref,
+        partnerAssigned: true,
+        partnerName,
+        status: booking.status || 'Assigned',
+        serviceType: booking.serviceType,
+        customerSpokenReply: `Your booking is ${ref}. Specialist ${partnerName} has been assigned to your service. I have just triggered an urgent priority dispatch alert to ${partnerName} to reach your address immediately!`
+      });
+    } else {
+      return res.json({
+        found: true,
+        ref,
+        partnerAssigned: false,
+        status: booking.status || 'Booking Received',
+        serviceType: booking.serviceType,
+        customerSpokenReply: `Your booking ${ref} is received, and our operations hub is currently expediting a nearby specialist to your home right now.`
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ found: false, error: err.message });
+  }
+});
+
 app.post('/api/send-partner-assigned', async (req, res) => {
   try {
     const { ref, customerName, customerMobile, partnerName, partnerPhone, service, date, time } = req.body;
@@ -370,11 +438,100 @@ app.post('/api/send-partner-assigned', async (req, res) => {
   }
 });
 
+// -------------------------------------------------------------
+// 2B. API: PARTNER REAL-TIME STATUS UPDATE -> CUSTOMER NOTIFICATION
+// -------------------------------------------------------------
+app.post('/api/partner-status-update', async (req, res) => {
+  try {
+    const { ref, status, customerMobile, customerName, partnerName } = req.body;
+    if (!ref || !status) return res.status(400).json({ success: false, error: 'ref and status required' });
+
+    const cPhone = normalizePhone(customerMobile);
+    const trackingUrl = `${CONFIG.TRACKING_BASE_URL}?id=${ref}`;
+    const pName = partnerName || 'Cleaning Specialist';
+    const cName = customerName || 'Customer';
+
+    let updateMsg = null;
+    if (status.toLowerCase().includes('on the way') || status.toLowerCase().includes('ontheway')) {
+      updateMsg = `🚗 *VS CLEANING UPDATE: SPECIALIST ON THE WAY!* 🚗\n\n` +
+        `வணக்கம் *${cName}*!\n` +
+        `உங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் **${pName}** உங்கள் முகவரிக்கு புறப்பட்டுவிட்டார்.\n\n` +
+        `🔍 *Live GPS Tracking:* \n${trackingUrl}\n\n` +
+        `எங்கள் ஸ்பெஷலிஸ்ட் விரைவில் உங்களை அடைவார்!`;
+    } else if (status.toLowerCase().includes('arrived')) {
+      updateMsg = `📍 *VS CLEANING UPDATE: SPECIALIST ARRIVED!* 📍\n\n` +
+        `வணக்கம் *${cName}*!\n` +
+        `உங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் **${pName}** உங்கள் வீட்டை அடைந்துவிட்டார்.\n\n` +
+        `தயவுசெய்து கதவைத் திறந்து ஸ்பெஷலிஸ்ட்டை அனுமதிக்கவும். சிறந்த சேவை அளிக்கப்படும்! ✨`;
+    } else if (status.toLowerCase().includes('progress') || status.toLowerCase().includes('started')) {
+      updateMsg = `🧹 *VS CLEANING UPDATE: JOB IN PROGRESS* 🧹\n\n` +
+        `வணக்கம் *${cName}*!\n` +
+        `உங்கள் வீட்டில் கிளீனிங் வேலை தற்போது துவங்கப்பட்டு தீவிரமாக நடைபெற்று வருகிறது.\n\n` +
+        `100% Eco-Friendly & Safe முறையிலான கிளீனிங் உறுதி செய்யப்படுகிறது.`;
+    } else if (status.toLowerCase().includes('completed')) {
+      updateMsg = `🎉 *VS CLEANING UPDATE: SERVICE COMPLETED!* 🎉\n\n` +
+        `வணக்கம் *${cName}*!\n` +
+        `உங்கள் புக்கிங் (*${ref}*) கிளீனிங் வேலை வெற்றிகரமாக நிறைவடைந்தது.\n\n` +
+        `💰 தொகையை Cash அல்லது UPI மூலம் ஸ்பெஷலிஸ்ட்டிடம் நேரடியாக செலுத்தலாம்.\n\n` +
+        `⭐ உங்கள் அனுபவம் எப்படி இருந்தது? 1 நிமிடம் மதிப்பீடு பகிருங்கள்:\n${CONFIG.REVIEW_BASE_URL}?id=${ref}\n\n` +
+        `நன்றி! மீண்டும் VS Home Cleaning-ஐ அழைக்கவும்! 🌸`;
+    }
+
+    if (updateMsg && cPhone) {
+      await sendWhatsAppMessage(cPhone, updateMsg);
+      logDispatch(`Job Status: ${status}`, cPhone, `Ref: ${ref}`, 'Delivered');
+    }
+
+    res.json({ success: true, ref, status, notified: Boolean(updateMsg && cPhone) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 3. AI VOICE HELPLINE & FOUNDER SOS (Inbound IVR & Escalations)
+// -------------------------------------------------------------
+app.post('/voice/incoming', (req, res) => {
+  const caller = req.body.From || req.body.Caller || 'Unknown';
+  console.log(`📞 [Inbound Voice Call] Incoming call from: ${caller}`);
+  const twiml = handleInboundCall();
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+});
+
+app.post('/voice/menu-select', async (req, res) => {
+  const digits = req.body.Digits || '';
+  const callerPhone = req.body.From || req.body.Caller || '';
+  console.log(`🔢 [IVR Menu Selected] Caller: ${callerPhone}, Pressed: ${digits}`);
+  const twiml = await handleMenuSelection(digits, callerPhone);
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+});
+
+app.post('/api/trigger-sos', async (req, res) => {
+  const { reason, ref, details } = req.body;
+  if (!reason) return res.status(400).json({ success: false, error: 'Reason is required' });
+
+  const result = await triggerFounderSosCall({
+    incidentKey: `api_${ref || Date.now()}`,
+    ref: ref || 'MANUAL-ALERT',
+    reason,
+    details: details || ''
+  });
+  res.json(result);
+});
+
+// Periodic background scan for Firebase emergency issues every 60s
+setInterval(() => {
+  scanForEmergencyIssues();
+}, 60 * 1000);
+
 // Start Express Server
 app.listen(PORT, () => {
   console.log(`=======================================================`);
-  console.log(`🧹 VS Home Cleaning — Saral WhatsApp Multi-Device Gateway`);
+  console.log(`🧹 VS Home Cleaning — Saral Autonomous AI Hub (WhatsApp + Voice)`);
   console.log(`Open http://localhost:${PORT} in your browser to scan QR code!`);
+  console.log(`Voice & SOS Target: ${FOUNDER_CONFIG.FOUNDER_PHONE}`);
   console.log(`=======================================================`);
   startWhatsAppSocket();
 });

@@ -349,10 +349,34 @@ function extractDateAndTime(text) {
 }
 
 /**
+ * Find recent booking(s) for a customer's phone number from Firebase RTDB (Singapore)
+ */
+async function findCustomerBookings(phone) {
+  if (!phone) return [];
+  const p10 = String(phone).replace(/\D/g, '').slice(-10);
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL}/bookings.json`);
+    const data = await res.json();
+    if (!data) return [];
+    const list = Object.values(data).filter(b => {
+      if (!b) return false;
+      const bMobile = String(b.mobile || b.customerMobile || '').replace(/\D/g, '').slice(-10);
+      return bMobile === p10;
+    });
+    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return list;
+  } catch (err) {
+    console.error('Error finding customer bookings in Firebase:', err);
+    return [];
+  }
+}
+
+/**
  * Save booking into Firebase RTDB (Singapore)
  */
 async function saveBookingToFirebase(session) {
-  const ref = generateRef();
+  const ref = session.pendingRef || generateRef();
+  session.pendingRef = null;
   const total = session.services.reduce((sum, s) => sum + s.price, 0) || 499;
   const mobile = (session.customerPhone || session.phone || '9999999999').replace(/\D/g, '').slice(-10);
   const serviceNames = session.services.map(s => s.name).join(' + ') || 'Classic Bathroom Cleaning';
@@ -501,10 +525,6 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
           session.services = [];
           session.address = null;
 
-          if (notifier && typeof notifier === 'function') {
-            notifier(FOUNDER_PHONE, `🚨 *NEW SARAL GEMINI BOOKING!* 🚨\nRef: ${booking.ref}\nCustomer: ${booking.name}\nServices: ${booking.serviceType}\nTotal: ₹${booking.total}\nSlot: ${booking.preferredDate} (${booking.preferredTime})\nAddress: ${booking.address}`);
-          }
-
           const cleanReply = geminiReply.replace(/\[CREATE_BOOKING:.*?\]/s, '').trim() +
             `\n\n🔍 *Live GPS Tracking:* https://vshomecleaningservices.in/track-booking.html?id=${booking.ref}`;
           return cleanReply;
@@ -521,17 +541,119 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   if (detectedLang === 'tamil' || detectedLang === 'tanglish') session.language = detectedLang;
   const isTamil = session.language === 'tamil';
 
-  // 1. Reference Number Lookup
-  const refMatch = text.match(/VS-\d{6}-[A-Z0-9]{4}/i);
+  // -------------------------------------------------------------
+  // AUTONOMOUS INTENT 1: PARTNER ARRIVAL DELAY & ESCALATION
+  // -------------------------------------------------------------
+  const isPartnerDelayQuery = (
+    lower.includes('partner not arrived') || lower.includes('cleaner not arrived') ||
+    lower.includes('not arrived') || lower.includes('hasnt arrived') || lower.includes('has not arrived') ||
+    lower.includes('not reached') || lower.includes('cleaner late') || lower.includes('partner late') ||
+    lower.includes('delay') || lower.includes('where is cleaner') || lower.includes('where is partner') ||
+    lower.includes('cleaner enga') || lower.includes('partner enga') || lower.includes('innum varala') ||
+    lower.includes('varalaya') || lower.includes('yen varala') || lower.includes('yen innum varala') ||
+    lower.includes('eppo varuvanga') || lower.includes('cleaner coming') ||
+    (lower.includes('partner') && (lower.includes('come') || lower.includes('reach') || lower.includes('waiting') || lower.includes('where') || lower.includes('late'))) ||
+    (lower.includes('cleaner') && (lower.includes('come') || lower.includes('reach') || lower.includes('waiting') || lower.includes('where') || lower.includes('late')))
+  );
+
+  if (isPartnerDelayQuery) {
+    const p10 = String(session.customerPhone || phone || '').replace(/\D/g, '').slice(-10);
+    const bookings = await findCustomerBookings(p10);
+    const b = bookings[0];
+
+    if (b) {
+      const partnerName = b.assignedPartnerName || b.assignedName || null;
+      const partnerPhone = b.assignedPartnerMobile || b.assignedMobile || null;
+
+      if (partnerName) {
+        // 1. Immediately trigger high-priority alert to the partner via WhatsApp
+        if (partnerPhone && notifier && typeof notifier === 'function') {
+          const pClean = String(partnerPhone).replace(/\D/g, '');
+          const urgentMsg = `🚨 *URGENT CUSTOMER WAITING ALERT — ACTION REQUIRED* 🚨\n\n` +
+            `வணக்கம் *${partnerName}*!\n` +
+            `புக்கிங் *${b.ref}* வாடிக்கையாளர் (+91 ${p10}) உங்களுக்காக வீட்டில் காத்துக் கொண்டிருக்கிறார்கள்!\n` +
+            `📍 முகவரி: ${b.address || 'Chennai'}\n` +
+            `🛠️ சர்வீஸ்: ${b.serviceType}\n` +
+            `📅 ஸ்லாட்: ${b.preferredDate} (${b.preferredTime})\n\n` +
+            `தயவுசெய்து உடனடியாக வாடிக்கையாளரை அழைத்து கிளம்பவும்! நீங்கள் எங்கு இருக்கிறீர்கள் என்பதை பார்ட்னர் ஆப்பில் உடனே அப்டேட் செய்யவும்.`;
+          try { await notifier(pClean, urgentMsg); } catch (e) {}
+        }
+
+        // 2. Reply to customer with partner details and live GPS tracking
+        return `வணக்கம் ${b.name || 'Sir / Madam'}! 🙏\n\n` +
+          `உங்கள் புக்கிங் (*${b.ref}*) விவரங்களை சரிபார்த்தேன்:\n\n` +
+          `👤 *ஒதுக்கப்பட்ட ஸ்பெஷலிஸ்ட்:* **${partnerName}**\n` +
+          `🛠️ *சர்வீஸ்:* ${b.serviceType}\n` +
+          `📅 *திட்டமிடப்பட்ட ஸ்லாட்:* ${b.preferredDate} (${b.preferredTime})\n` +
+          `📊 *தற்போதைய நிலை:* *${b.status || 'Assigned'}*\n\n` +
+          `⚡ நான் இப்போதே **${partnerName}**-க்கு வாட்ஸ்அப்பில் அவசர அலர்ட் அனுப்பிவிட்டேன்! அவர் உடனடியாக உங்களிடம் புறப்பட்டு வருமாறு அறிவுறுத்தப்பட்டுள்ளார்.\n\n` +
+          `🔍 *நேரடி Live GPS Tracking Link:* \nhttps://vshomecleaningservices.in/track-booking.html?id=${b.ref}\n\n` +
+          `கவலைப்பட வேண்டாம், உங்கள் திருப்தியே எங்களின் முதல் நோக்கம்! ஏதேனும் கூடுதல் உதவி தேவையெனில் உடனே தெரிவிக்கவும். ✨`;
+      } else {
+        return `வணக்கம் ${b.name || 'Sir / Madam'}! 🙏\n\n` +
+          `உங்கள் புக்கிங் (*${b.ref}*) சிஸ்டத்தில் பெறப்பட்டு தயார் நிலையில் உள்ளது.\n\n` +
+          `🛠️ *சர்வீஸ்:* ${b.serviceType}\n` +
+          `📅 *ஸ்லாட்:* ${b.preferredDate} (${b.preferredTime})\n` +
+          `📊 *நிலை:* *${b.status || 'Booking Received'}*\n\n` +
+          `எங்கள் Operations மையம் உங்கள் முகவரிக்கு அருகிலுள்ள சிறந்த ஸ்பெஷலிஸ்ட்டை உடனடியாக ஒதுக்கி வருகிறது. இன்னும் சில நிமிடங்களில் பார்ட்னர் விவரம் உங்களுக்கு உறுதி செய்யப்படும்!\n\n` +
+          `🔍 *நேரடி ட்ராக்கிங்:* \nhttps://vshomecleaningservices.in/track-booking.html?id=${b.ref}`;
+      }
+    } else {
+      return `வணக்கம்! உங்கள் வாட்ஸ்அப் எண்ணில் (+91 ${p10}) பதிவு செய்யப்பட்ட புக்கிங் எதுவும் தற்போது காணப்படவில்லை.\n\n` +
+        `உங்களிடம் Booking Reference எண் (எ.கா: *VS-XXXXXX*) இருந்தால் பகிருங்கள், நான் உடனடியாக ட்ராக் செய்கிறேன்! அல்லது புதிய கிளீனிங் சர்வீஸ் புக் செய்ய உதவட்டுமா? 😊`;
+    }
+  }
+
+  // -------------------------------------------------------------
+  // AUTONOMOUS INTENT 2: MY ORDERS / BOOKING DETAILS / STATUS CHECK
+  // -------------------------------------------------------------
+  const isOrderDetailsQuery = (
+    lower.includes('already booked') || lower.includes('booked one order') ||
+    lower.includes('share the order') || lower.includes('share the orders') ||
+    lower.includes('share orders') || lower.includes('my order') || lower.includes('my booking') ||
+    lower.includes('order details') || lower.includes('check my order') ||
+    lower.includes('order status') || lower.includes('booking status') ||
+    lower.includes('ennoda booking') || lower.includes('booking details') ||
+    lower.includes('track my order') || lower.includes('tracking link') ||
+    lower.includes('view my booking') || lower.includes('last booking')
+  );
+
+  if (isOrderDetailsQuery) {
+    const p10 = String(session.customerPhone || phone || '').replace(/\D/g, '').slice(-10);
+    const bookings = await findCustomerBookings(p10);
+    const b = bookings[0];
+
+    if (b) {
+      const partner = b.assignedPartnerName || b.assignedName || 'ஒதுக்கப்பட்டு வருகிறார் (Assigning soon)';
+      return `📋 *உங்கள் புக்கிங் விவரங்கள்:* 🌟\n\n` +
+        `🆔 *Booking Ref:* **${b.ref}**\n` +
+        `🛠️ *சர்வீஸ்:* ${b.serviceType}\n` +
+        `📅 *தேதி & நேரம்:* ${b.preferredDate} (${b.preferredTime})\n` +
+        `👤 *ஸ்பெஷலிஸ்ட்:* **${partner}**\n` +
+        `📍 *முகவரி:* ${b.address}\n` +
+        `💰 *மொத்தத் தொகை:* ₹${b.total} (100% Pay After Service)\n` +
+        `📊 *நிலை:* *${b.status || 'Confirmed'}*\n\n` +
+        `🔍 *Live GPS Tracking:* \nhttps://vshomecleaningservices.in/track-booking.html?id=${b.ref}\n\n` +
+        `ஏதேனும் மாற்றம் செய்ய வேண்டுமா அல்லது ஏதேனும் உதவி தேவையா? தயங்காமல் தெரிவிக்கவும்! 😊`;
+    } else {
+      return `வணக்கம்! உங்கள் எண்ணில் (+91 ${p10}) சமீபத்திய புக்கிங் எதுவும் காணப்படவில்லை.\n\n` +
+        `உங்களிடம் Booking Reference எண் (VS-XXXXXX) இருந்தால் அனுப்புங்கள் அல்லது புதிய கிளீனிங் சர்வீஸ் புக் செய்ய விரும்புகிறீர்களா? 😊`;
+    }
+  }
+
+  // 1. Direct Reference Number Lookup
+  const refMatch = text.match(/VS-\d{6}-[A-Z0-9]{4}/i) || text.match(/\b(VS-[A-Z0-9-]+)\b/i);
   if (refMatch) {
     const ref = refMatch[0].toUpperCase();
     try {
       const res = await fetch(`${FIREBASE_DB_URL}/bookings/${ref}.json`);
       const b = await res.json();
       if (b) {
+        const partner = b.assignedPartnerName || b.assignedName || 'ஒதுக்கப்பட்டு வருகிறார் (Assigning soon)';
         return `🔍 *Booking Status (${ref})*:\n\n` +
           `🛠️ *Services:* ${b.serviceType}\n` +
           `📅 *Slot:* ${b.preferredDate} (${b.preferredTime})\n` +
+          `👤 *Specialist:* **${partner}**\n` +
           `📍 *Address:* ${b.address}\n` +
           `📊 *Status:* *${b.status}*\n` +
           `💰 *Amount:* ₹${b.total} (Pay after service)\n\n` +
@@ -560,8 +682,8 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     return `💳 **Payment Policy:**\n\nYou do NOT need to pay any advance! 100% Pay After Service. 👍 You can pay via UPI (GPay/PhonePe) or Cash after the specialist completes the work. 😊`;
   }
 
-  if (lower.includes('owner') || lower.includes('founder') || lower.includes('vignesh') || lower.includes('manager')) {
-    return `Certainly! You can speak directly with our Founder:\n\n👤 **Mr. Vignesh (Founder & Operations)**\n📞 **Direct Helpline:** +91 63834 58190\n🏢 **VS Home Cleaning Services, Chennai**`;
+  if (lower.includes('owner') || lower.includes('founder') || lower.includes('vignesh') || lower.includes('manager') || lower.includes('support team')) {
+    return `Certainly! You are connected directly with **VS Home Cleaning Executive Support (Saral)**. 🌸\n\nI can assist you with all bookings, partner coordination, pricing, and rescheduling. For critical escalations, our **Senior Operations Manager** will review your request directly. How can I assist you right now? 😊`;
   }
 
   // 3. Extract Services, Quantities, Address, Date & Time
@@ -592,12 +714,6 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     session.stage = 'idle';
     session.services = [];
     session.address = null;
-
-    if (notifier && typeof notifier === 'function') {
-      try {
-        notifier(FOUNDER_PHONE, `🚨 *NEW SARAL WHATSAPP BOOKING!* 🚨\nRef: ${booking.ref}\nCustomer: ${booking.name}\nServices: ${booking.serviceType}\nTotal: ₹${booking.total}\nSlot: ${booking.preferredDate} (${booking.preferredTime})\nAddress: ${booking.address}`);
-      } catch (e) {}
-    }
 
     return `🎉 **BOOKING CONFIRMED SUCCESSFULLY!** 🎉\n\n` +
       `📋 *Booking Reference:* **${booking.ref}**\n` +
@@ -699,11 +815,70 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   }
 
   // Fallback polite inquiry
-  return `Hello! How can I help you today? You can tell me which cleaning service you need or share your preferred date! 😊`;
+  if (isTamil) {
+    return `வணக்கம்! நான் VS Home Cleaning-ன் உதவியாளர் **சாரல்**. 🌸\n\nநீங்கள் புதிய புக்கிங் செய்ய விரும்புகிறீர்களா, அல்லது ஏற்கனவே பதிவு செய்த ஆர்டர் பற்றிய விவரங்கள் (ஆர்டர் நிலை, பார்ட்னர் விவரம்) தேவையா? தயங்காமல் சொல்லுங்கள், நான் உதவுகிறேன்! 😊`;
+  }
+  return `Hello! I'm **Saral** from VS Home Cleaning Services. 🌸\n\nWould you like to schedule a new cleaning service, or do you need details/status on an existing booking? Please let me know and I'll assist you right away! 😊`;
+}
+
+/**
+ * Handle WhatsApp Native Catalog / Cart Order
+ */
+async function handleCartOrder(phone, orderMsg, pushName) {
+  const session = getSession(phone);
+  if (pushName && !session.name) {
+    session.name = pushName.replace(/[^\w\s]/gi, '').trim() || null;
+  }
+
+  const itemCount = orderMsg?.itemCount || 1;
+  const rawTotal = orderMsg?.totalAmount1000;
+  const total = rawTotal ? Math.round(Number(rawTotal) / 1000) : 3097;
+  const orderTitle = orderMsg?.orderTitle || 'Cleaning Services';
+  const ref = generateRef();
+  session.pendingRef = ref;
+
+  session.services = [{
+    id: 'whatsapp_cart',
+    name: `${itemCount} Services from WhatsApp Cart (${orderTitle})`,
+    price: total,
+    count: itemCount
+  }];
+
+  const prevBookings = await findCustomerBookings(phone);
+  const prevAddress = prevBookings.length > 0 && prevBookings[0].address ? prevBookings[0].address : null;
+
+  if (prevAddress) {
+    session.address = prevAddress;
+    session.stage = 'asking_slot';
+    return `🛒 **WHATSAPP CART ORDER RECEIVED!** ✨\n\n` +
+      `வணக்கம் *${session.name || 'Customer'}*! 🙏\n` +
+      `உங்கள் வாட்ஸ்அப் கார்ட் ஆர்டர் வெற்றிகரமாக பதிவு செய்யப்பட்டுள்ளது.\n\n` +
+      `🆔 *Booking Reference:* **${ref}**\n` +
+      `📦 *சேவைகள்:* ${itemCount} சேவைகள் (${orderTitle})\n` +
+      `💰 *மொத்தத் தொகை:* ₹${total} (100% Pay After Service - Zero Advance)\n` +
+      `📍 *முகவரி:* ${prevAddress}\n\n` +
+      `எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் வர எந்த நேர ஸ்லாட் வசதியாக இருக்கும்?\n` +
+      `🌅 *Morning:* 08:00 AM - 10:00 AM\n` +
+      `☀️ *Morning:* 10:00 AM - 12:00 PM\n` +
+      `🌤️ *Afternoon:* 02:00 PM - 04:00 PM\n` +
+      `🌆 *Evening:* 04:00 PM - 06:00 PM\n\n` +
+      `(வேறு முகவரி எனில் புதிய முகவரியையும் அனுப்பலாம்) 😊`;
+  } else {
+    session.stage = 'asking_location';
+    return `🛒 **WHATSAPP CART ORDER RECEIVED!** ✨\n\n` +
+      `வணக்கம் *${session.name || 'Customer'}*! 🙏\n` +
+      `உங்கள் வாட்ஸ்அப் கார்ட் ஆர்டர் வெற்றிகரமாக பதிவு செய்யப்பட்டுள்ளது.\n\n` +
+      `🆔 *Booking Reference:* **${ref}**\n` +
+      `📦 *தேர்ந்தெடுக்கப்பட்டவை:* ${itemCount} சேவைகள் (${orderTitle})\n` +
+      `💰 *மொத்தத் தொகை:* ₹${total} (100% Pay After Service - Zero Advance)\n\n` +
+      `📍 எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் வர வேண்டிய உங்கள் **சென்னை முகவரி மற்றும் PIN Code**-ஐ பகிருங்கள் (எ.கா: *Anna Nagar West, Flat 3B, 600040*).\n\n` +
+      `முகவரி கிடைத்ததும் நேர ஸ்லாட்டை உறுதி செய்து ஸ்பெஷலிஸ்ட்டை உடனடியாக ஒதுக்குகிறேன்! 🧹✨`;
+  }
 }
 
 module.exports = {
   processCustomerMessage,
+  handleCartOrder,
   SERVICES,
   saveBookingToFirebase
 };
