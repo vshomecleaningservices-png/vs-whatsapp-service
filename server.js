@@ -362,39 +362,69 @@ app.post('/api/send-confirmation', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 2. API: PARTNER ASSIGNED ALERT
+// 2. API: ORDER & PHONE LOOKUP (FOR AI VOICE & WHATSAPP)
 // -------------------------------------------------------------
-app.post('/api/order-partner-check', async (req, res) => {
+app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/lookup-booking'], async (req, res) => {
   try {
-    const ref = (req.body.ref || req.body.order_id || req.query.ref || '').trim().toUpperCase();
-    if (!ref) return res.status(400).json({ found: false, error: 'Order reference required' });
+    const rawInput = (req.body?.query || req.body?.phone || req.body?.mobile || req.body?.ref || req.body?.order_id || req.query?.query || req.query?.phone || req.query?.mobile || req.query?.ref || '').trim();
+    if (!rawInput) return res.status(400).json({ found: false, error: 'Order reference or registered phone number required' });
 
-    const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings/${ref}.json`);
-    const booking = await fbRes.json();
+    let booking = null;
+    let ref = null;
+
+    // Check if input is a phone number (e.g. 10 digits or starts with 91)
+    const digitsOnly = rawInput.replace(/\D/g, '');
+    const isPhone = digitsOnly.length >= 10 && !rawInput.toUpperCase().startsWith('VS-');
+
+    if (isPhone) {
+      const p10 = digitsOnly.slice(-10);
+      const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings.json`);
+      const allBookings = await fbRes.json();
+      if (allBookings) {
+        const matches = Object.values(allBookings).filter(b => {
+          if (!b) return false;
+          const bMobile = String(b.mobile || b.customerMobile || '').replace(/\D/g, '').slice(-10);
+          return bMobile === p10;
+        });
+        matches.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        if (matches.length > 0) {
+          booking = matches[0];
+          ref = booking.ref;
+        }
+      }
+    } else {
+      ref = rawInput.toUpperCase();
+      const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings/${ref}.json`);
+      booking = await fbRes.json();
+    }
 
     if (!booking) {
       return res.json({
         found: false,
-        ref,
-        message: `Booking ${ref} not found in database.`
+        query: rawInput,
+        customerSpokenReply: `I checked our system, but could not locate any active booking with that detail. Would you like me to book a cleaning service for you now?`
       });
     }
 
+    ref = booking.ref || ref;
     const partnerName = booking.assignedPartnerName || booking.assignedName || null;
     const partnerPhone = booking.assignedPartnerMobile || booking.assignedMobile || null;
+    const serviceType = booking.serviceType || 'Home Cleaning';
+    const scheduledSlot = `${booking.preferredDate || 'Upcoming'} at ${booking.preferredTime || 'scheduled time'}`;
+    const status = booking.status || 'Booking Received';
 
     if (partnerName) {
-      // Trigger instant urgent WhatsApp alert to the assigned partner
-      if (partnerPhone) {
+      // Trigger instant urgent WhatsApp alert to the assigned partner if caller is escalating
+      if (partnerPhone && (req.body?.alert_partner || req.query?.alert_partner)) {
         const pClean = normalizePhone(partnerPhone);
-        const urgentMsg = `🚨 *URGENT CUSTOMER ENQUIRY — ACTION REQUIRED* 🚨\n\n` +
+        const urgentMsg = `🚨 *URGENT CUSTOMER CALL ENQUIRY* 🚨\n\n` +
           `வணக்கம் *${partnerName}*!\n` +
-          `புக்கிங் *${ref}* கஸ்டமர் உங்களுக்காக வீட்டில் காத்திருக்கிறார்கள்.\n` +
+          `புக்கிங் *${ref}* வாடிக்கையாளர் அழைப்பில் உங்களுக்காக காத்திருக்கிறார்கள்.\n` +
           `📍 முகவரி: ${booking.address || 'Chennai'}\n` +
-          `🛠️ சர்வீஸ்: ${booking.serviceType}\n\n` +
-          `தயவுசெய்து உடனடியாக வாடிக்கையாளரின் வீட்டிற்கு செல்லவும்! தாமதத்திற்கான காரணத்தை உடனே அட்மினிடம் தெரிவிக்கவும்.`;
+          `🛠️ சர்வீஸ்: ${serviceType}\n\n` +
+          `தயவுசெய்து உடனடியாக வாடிக்கையாளரை அழைத்து கிளம்பவும்!`;
         await sendWhatsAppMessage(pClean, urgentMsg);
-        logDispatch('Urgent Partner Reminder', pClean, `Expedite: ${ref}`, 'Delivered');
+        logDispatch('Voice Partner Alert', pClean, `Expedite: ${ref}`, 'Delivered');
       }
 
       return res.json({
@@ -402,18 +432,24 @@ app.post('/api/order-partner-check', async (req, res) => {
         ref,
         partnerAssigned: true,
         partnerName,
-        status: booking.status || 'Assigned',
-        serviceType: booking.serviceType,
-        customerSpokenReply: `Your booking is ${ref}. Specialist ${partnerName} has been assigned to your service. I have just triggered an urgent priority dispatch alert to ${partnerName} to reach your address immediately!`
+        serviceType,
+        scheduledSlot,
+        address: booking.address,
+        total: booking.total,
+        status,
+        customerSpokenReply: `Yes! I found your booking for ${serviceType} scheduled for ${scheduledSlot}. Specialist ${partnerName} has been assigned to your service!`
       });
     } else {
       return res.json({
         found: true,
         ref,
         partnerAssigned: false,
-        status: booking.status || 'Booking Received',
-        serviceType: booking.serviceType,
-        customerSpokenReply: `Your booking ${ref} is received, and our operations hub is currently expediting a nearby specialist to your home right now.`
+        serviceType,
+        scheduledSlot,
+        address: booking.address,
+        total: booking.total,
+        status,
+        customerSpokenReply: `I found your booking for ${serviceType} scheduled for ${scheduledSlot}. Our operations hub is currently assigning the nearest specialist to your address!`
       });
     }
   } catch (err) {

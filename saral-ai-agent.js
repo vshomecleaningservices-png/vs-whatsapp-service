@@ -239,13 +239,9 @@ function isValidAddress(text) {
 
   if (/\b600\d{3}\b/.test(lower)) return true;
 
-  const addressKeywords = [
-    'nagar', 'street', 'road', 'rd', 'flat', 'apartment', 'apt', 'block', 'floor',
-    'door', 'colony', 'layout', 'cross', 'main', 'opp', 'near', 'beside', 'phase',
-    'house', 'plot', 'avenue', 'sector', 'stage',
-    'நகர்', 'தெரு', 'ரோடு', 'வீடு', 'அபார்ட்மெண்ட்'
-  ];
-  if (addressKeywords.some(kw => lower.includes(kw)) && clean.length >= 5) return true;
+  const addressRegex = /\b(nagar|street|road|rd|flat|apartment|apt|block|floor|door|colony|layout|cross|main|opp|near|beside|phase|house|plot|avenue|sector|stage)\b/i;
+  const tamilAddressRegex = /(நகர்|தெரு|ரோடு|வீடு|அபார்ட்மெண்ட்|பிளாட்)/;
+  if ((addressRegex.test(lower) || tamilAddressRegex.test(lower)) && clean.length >= 6) return true;
 
   return false;
 }
@@ -433,45 +429,74 @@ async function saveBookingToFirebase(session) {
 /**
  * Call Google Gemini 2.0 Flash for True Human Conversational Intelligence
  */
-async function callGeminiFlash(session, userMessage) {
-  const apiKey = process.env.GEMINI_API_KEY;
+async function callGeminiFlash(session, userMessage, customerBookings = []) {
+  const apiKey = process.env.GEMINI_API_KEY || GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const systemInstruction = `
-You are Saral (சாரல்), the friendly, charming, highly professional customer relationship & booking assistant at VS Home Cleaning Services, Chennai.
-Founder: Mr. Vignesh (Phone: +91 63834 58190).
+  let bookingInfo = "No previous booking found for this customer phone.";
+  let activePartnerName = null;
 
-Catalog & Pricing:
+  if (customerBookings && customerBookings.length > 0) {
+    const b = customerBookings[0];
+    activePartnerName = b.assignedPartnerName || b.assignedName || null;
+    bookingInfo = `
+CUSTOMER EXISTING BOOKING IN DATABASE:
+- Reference ID: ${b.ref}
+- Services: ${b.serviceType}
+- Scheduled Slot: ${b.preferredDate} (${b.preferredTime})
+- Assigned Cleaner / Specialist: ${activePartnerName || 'Assigning nearest cleaner now'}
+- Current Status: ${b.status}
+- Address: ${b.address}
+- Total Amount: ₹${b.total} (Pay after service)
+- Live Tracking Link: https://vshomecleaningservices.in/track-booking.html?id=${b.ref}
+`;
+  }
+
+  const systemInstruction = `
+You are Saaral (சாரல்), the friendly, charming, highly intelligent Chief Operations & Customer Relationship Voice/WhatsApp Assistant for VS Home Cleaning Services, Chennai (+91 75581 91073).
+Senior Operations Manager: Mr. Vignesh.
+Website: vshomecleaningservices.in
+
+${bookingInfo}
+
+Catalog & Starting Rates:
 - Classic Bathroom Cleaning: ₹499 per bathroom
 - Kitchen Deep Cleaning: ₹799
 - Sofa Shampoo & Sanitization: ₹699 (3 to 5 seater), ₹899 (6-7 seater)
 - Full Home Deep Cleaning: 1BHK ₹1499, 2BHK ₹1999, 3BHK ₹2499
 - Balcony & Window Cleaning: ₹499
-Terms: Zero advance, 100% pay after service (Cash or UPI). Diversey eco-friendly chemicals (safe for children & pets, zero acid).
+- Add-on services (cupboards, fridge, fans, lofts): from ₹69
+Terms: Zero advance, 100% pay after service (Cash or UPI). Safe eco-friendly Diversey solutions (zero acid, child & pet safe).
 
-Personality:
-1. Warm, respectful, natural human conversational tone (use brief emojis).
-2. NEVER repeat recorded greetings like a robot. Talk like an active human texting on WhatsApp.
-3. Language: Match customer's language seamlessly (English, Tamil, or Tanglish).
-4. Smoothly collect:
-   a. Service & quantities (e.g. 4 bathrooms = 4x499 = ₹1996)
-   b. Chennai locality & Flat/Street address
-   c. Date & preferred time slot (Morning 8-10, Morning 10-12, Afternoon 2-4, Evening 4-6)
-5. When all 3 (Services, Address, Slot) are collected, show a neat summary card and ask the customer to confirm with "Confirm" or "Yes".
-6. When the customer confirms, add the exact tag: [CREATE_BOOKING: {"services": "...", "total": 1999, "address": "...", "date": "...", "time": "..."}] at the very end of your reply so the automated backend creates the booking!
+YOUR CONVERSATIONAL INTELLIGENCE & PERSONALITY:
+1. Speak like a real, witty, caring human in Tamil, Indian English, or Tanglish — seamlessly match what the customer speaks.
+2. Casual chatter & greetings ("Saptiya", "Saptingala", "Hi", "Eppadi irukinga", "Good morning", "Enna panreenga"):
+   Reply with authentic Tamil warmth and gentle humor! (e.g. "இன்னும் சாப்பிடலங்க! நீங்க சாப்டீங்களா? 😊 உங்க வீட்ல ஏதாச்சும் கிளீனிங் வேலை பண்ணனுமா சொல்லுங்க, நான் பார்த்துக்கிறேன்!"). NEVER treat greetings or casual questions as addresses!
+3. Customer asks about existing booking / "Where is my cleaner" / "Partner not arrived" / "Delay":
+   - Use the CUSTOMER EXISTING BOOKING info above!
+   - Warmly reassure the customer: mention their Ref ID, scheduled slot, and the assigned specialist's name.
+   - If they report cleaner has not arrived or is late, say: "I have just sent an urgent priority dispatch alert to specialist ${activePartnerName || 'our team'} to reach your home immediately!" and append tag [ALERT_PARTNER: true] so our backend notifies the partner.
+4. Booking a new service:
+   Smoothly collect: (1) Services & count, (2) Chennai Area / Flat address & PIN, (3) Date & Slot.
+   Once all 3 are gathered and customer confirms with "Confirm" or "Yes", output:
+   [CREATE_BOOKING: {"services": "...", "total": 1499, "address": "...", "date": "...", "time": "..."}]
+5. Never say "Founder" or "Owner" (refer only to "Senior Operations Manager" or "Executive Support Team").
 `.trim();
 
   try {
     const contents = [
       { role: 'user', parts: [{ text: systemInstruction }] },
-      { role: 'model', parts: [{ text: 'Vanakkam! I am Saral, ready to help customers naturally on WhatsApp.' }] },
+      { role: 'model', parts: [{ text: 'Vanakkam! I am Saaral, ready to help customers with human warmth and intelligence.' }] },
       ...session.history.slice(-8),
       { role: 'user', parts: [{ text: userMessage }] }
     ];
 
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
       body: JSON.stringify({
         contents,
         generationConfig: {
@@ -487,6 +512,8 @@ Personality:
       session.history.push({ role: 'user', parts: [{ text: userMessage }] });
       session.history.push({ role: 'model', parts: [{ text: replyText }] });
       return replyText;
+    } else {
+      console.log('Gemini API response warning:', data.error || data);
     }
   } catch (err) {
     console.error('Gemini Flash call error:', err);
@@ -506,12 +533,31 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     session.name = senderPushName.replace(/[^\w\s]/gi, '').trim() || null;
   }
 
+  const p10 = String(session.customerPhone || phone || '').replace(/\D/g, '').slice(-10);
+  const customerBookings = await findCustomerBookings(p10);
+
   // -------------------------------------------------------------
   // ATTEMPT 1: Google Gemini 2.0 Flash (If API Key is provided)
   // -------------------------------------------------------------
-  if (process.env.GEMINI_API_KEY) {
-    const geminiReply = await callGeminiFlash(session, text);
+  if (GEMINI_API_KEY) {
+    const geminiReply = await callGeminiFlash(session, text, customerBookings);
     if (geminiReply) {
+      // Check if partner alert is triggered
+      if (geminiReply.includes('[ALERT_PARTNER: true]') && customerBookings.length > 0) {
+        const b = customerBookings[0];
+        const pPhone = b.assignedPartnerMobile || b.assignedMobile;
+        const pName = b.assignedPartnerName || b.assignedName || 'Specialist';
+        if (pPhone && notifier && typeof notifier === 'function') {
+          const pClean = String(pPhone).replace(/\D/g, '');
+          const urgentMsg = `🚨 *URGENT CUSTOMER WAITING ALERT* 🚨\n\n` +
+            `வணக்கம் *${pName}*!\n` +
+            `புக்கிங் *${b.ref}* வாடிக்கையாளர் (+91 ${p10}) உங்களுக்காக வீட்டில் காத்துக் கொண்டிருக்கிறார்கள்!\n` +
+            `📍 முகவரி: ${b.address || 'Chennai'}\n` +
+            `தயவுசெய்து உடனடியாக வாடிக்கையாளரை அழைத்து கிளம்பவும்!`;
+          try { await notifier(pClean, urgentMsg); } catch (e) {}
+        }
+      }
+
       // Check if Gemini triggered automated booking
       const bookMatch = geminiReply.match(/\[CREATE_BOOKING:\s*(\{.*?\})\]/s);
       if (bookMatch) {
@@ -525,12 +571,19 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
           session.services = [];
           session.address = null;
 
-          const cleanReply = geminiReply.replace(/\[CREATE_BOOKING:.*?\]/s, '').trim() +
+          const cleanReply = geminiReply
+            .replace(/\[CREATE_BOOKING:.*?\]/s, '')
+            .replace(/\[ALERT_PARTNER:\s*true\]/gi, '')
+            .trim() +
             `\n\n🔍 *Live GPS Tracking:* https://vshomecleaningservices.in/track-booking.html?id=${booking.ref}`;
           return cleanReply;
         } catch (e) {}
       }
-      return geminiReply.replace(/\[CREATE_BOOKING:.*?\]/s, '').trim();
+
+      return geminiReply
+        .replace(/\[CREATE_BOOKING:.*?\]/s, '')
+        .replace(/\[ALERT_PARTNER:\s*true\]/gi, '')
+        .trim();
     }
   }
 
