@@ -6,7 +6,11 @@
  * Runs 24/7 on port 3001.
  */
 
+try { require('dotenv').config(); } catch (e) {}
+
 const express = require('express');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -14,6 +18,8 @@ const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const saralAgent = require('./saral-ai-agent');
+let emailService = null;
+try { emailService = require('./email-service'); } catch (e) { console.log('[Notice] email-service:', e.message); }
 
 // Safe optional loading for voice agent and founder SOS modules
 let handleInboundCall = () => '<Response><Say>VS Home Cleaning Support. Please visit our website.</Say></Response>';
@@ -61,6 +67,22 @@ const CONFIG = {
   TRACKING_BASE_URL: 'https://vshomecleaningservices.in/track-booking.html',
   REVIEW_BASE_URL: 'https://vshomecleaningservices.in/review.html'
 };
+
+
+// Razorpay Standard Checkout SDK Initialization
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
+
+let razorpay = null;
+try {
+  razorpay = new Razorpay({
+    key_id: RAZORPAY_KEY_ID,
+    key_secret: RAZORPAY_KEY_SECRET
+  });
+  console.log('✅ Razorpay SDK initialized successfully with Key:', RAZORPAY_KEY_ID);
+} catch (rErr) {
+  console.error('Failed to initialize Razorpay SDK:', rErr.message);
+}
 
 let waSocket = null;
 let currentQrDataUrl = null;
@@ -360,6 +382,347 @@ app.post('/api/send-confirmation', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 1.5. API: WEB CHAT & VOICE COMPANION (POWERS WEBSITE SAARAL AI)
+// -------------------------------------------------------------
+app.post('/api/chat', async (req, res) => {
+  try {
+    const text = (req.body?.message || req.body?.text || '').trim();
+    const phone = req.body?.phone || 'web_guest';
+    const name = req.body?.name || 'Customer';
+    if (!text) return res.json({ reply: 'வணக்கம்! உங்களுக்கு எப்படி உதவட்டும்?' });
+
+    const reply = await saralAgent.processCustomerMessage(phone, text, name, null);
+    res.json({ reply });
+  } catch (err) {
+    console.error('Web Chat API error:', err);
+    res.json({ reply: 'வணக்கம்! VS Home Cleaning Services-ல் என்ன சேவை தேவைப்படுகிறது?' });
+  }
+});
+
+// -------------------------------------------------------------
+
+// -------------------------------------------------------------
+// 1.6. RAZORPAY STANDARD WEB CHECKOUT: CREATE ORDER
+// -------------------------------------------------------------
+app.post('/api/create-order', async (req, res) => {
+  try {
+    let { amount, currency, receipt, notes } = req.body;
+
+    if (amount === undefined || amount === null) {
+      return res.status(400).json({ error: 'Amount is required' });
+    }
+
+    // Ensure amount is in paise (minimum 100 paise = ₹1)
+    const amountInPaise = Math.round(Number(amount));
+    if (isNaN(amountInPaise) || amountInPaise < 100) {
+      return res.status(400).json({ error: 'Amount must be at least 100 paise (₹1)' });
+    }
+
+    if (!razorpay) {
+      return res.status(500).json({ error: 'Razorpay SDK is not configured' });
+    }
+
+    const options = {
+      amount: amountInPaise,
+      currency: currency || 'INR',
+      receipt: String(receipt || ('rcpt_' + Date.now())).slice(0, 40),
+      notes: notes || {}
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    return res.json({
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      key_id: RAZORPAY_KEY_ID
+    });
+  } catch (err) {
+    console.error('Razorpay Create Order Error:', err);
+    if (err.statusCode === 401 || (err.error && err.error.code === 'BAD_REQUEST_ERROR' && err.error.description?.toLowerCase().includes('auth'))) {
+      return res.status(401).json({ error: 'Razorpay authentication failed' });
+    }
+    return res.status(err.statusCode || 500).json({
+      error: err.error?.description || err.message || 'Failed to create Razorpay order'
+    });
+  }
+});
+
+// -------------------------------------------------------------
+// 1.7. RAZORPAY STANDARD WEB CHECKOUT: VERIFY PAYMENT SIGNATURE
+// -------------------------------------------------------------
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, ref } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required payment verification fields (order_id, payment_id, signature)'
+      });
+    }
+
+    const payload = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac('sha256', RAZORPAY_KEY_SECRET)
+      .update(payload)
+      .digest('hex');
+
+    const isMatch = (
+      expectedSignature.length === razorpay_signature.length &&
+      crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(razorpay_signature))
+    );
+
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        error: 'Signature verification failed. Invalid payment signature.'
+      });
+    }
+
+    // Update Firebase booking status if booking ref is provided
+    // Trigger Automated Email Receipt via Resend
+    if (emailService) {
+      emailService.sendPaymentReceiptEmail({
+        ref: ref || 'VS-PAYMENT',
+        paymentId: razorpay_payment_id,
+        amount: req.body?.amount || 0,
+        customerName: req.body?.name || 'Customer',
+        email: req.body?.email,
+        serviceType: req.body?.serviceType || 'Home Deep Cleaning'
+      }).catch(e => console.error('Payment receipt email failed:', e.message));
+    }
+
+    if (ref) {
+      try {
+        await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/${ref}.json`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paymentStatus: 'PAID',
+            paymentMethod: 'razorpay',
+            razorpayPaymentId: razorpay_payment_id,
+            razorpayOrderId: razorpay_order_id,
+            paidAt: Date.now()
+          })
+        });
+      } catch (dbErr) {
+        console.warn('Firebase payment update notice:', dbErr.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Payment verified successfully',
+      order_id: razorpay_order_id,
+      payment_id: razorpay_payment_id
+    });
+  } catch (err) {
+    console.error('Razorpay Verify Payment Error:', err);
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Payment verification processing error'
+    });
+  }
+});
+
+
+// 1.8. RESEND AUTOMATED BOOKING CONFIRMATION & FOUNDER ALERT
+// -------------------------------------------------------------
+app.post('/api/send-booking-email', async (req, res) => {
+  try {
+    const booking = req.body;
+    if (!booking || (!booking.ref && !booking.mobile)) {
+      return res.status(400).json({ success: false, error: 'Booking reference or details required' });
+    }
+
+    if (emailService) {
+      const results = await Promise.allSettled([
+        emailService.sendBookingConfirmationEmail(booking),
+        emailService.sendFounderAlertEmail(booking)
+      ]);
+      return res.json({
+        success: true,
+        message: 'Email automation dispatched',
+        confirmation: results[0]?.value,
+        founderAlert: results[1]?.value
+      });
+    }
+
+    return res.status(503).json({ success: false, error: 'Email service uninitialized' });
+  } catch (err) {
+    console.error('Send booking email error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// 1.9. PERSISTENT SUBSCRIBER MANAGEMENT & WEEKLY LUXURY PROMOTIONS
+// -------------------------------------------------------------
+const SUBSCRIBERS_FILE = path.join(__dirname, 'subscribers.json');
+
+function loadSubscribers() {
+  try {
+    if (fs.existsSync(SUBSCRIBERS_FILE)) {
+      return JSON.parse(fs.readFileSync(SUBSCRIBERS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Error loading subscribers:', e.message);
+  }
+  return {};
+}
+
+function saveSubscribers(subs) {
+  try {
+    fs.writeFileSync(SUBSCRIBERS_FILE, JSON.stringify(subs, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error saving subscribers:', e.message);
+  }
+}
+
+// Subscribe customer (called on login, booking, or newsletter form)
+app.post('/api/subscribe', async (req, res) => {
+  try {
+    const { email, name, mobile, source = 'website' } = req.body;
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ success: false, error: 'Valid email required' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const subs = loadSubscribers();
+
+    subs[cleanEmail] = {
+      email: cleanEmail,
+      name: name || subs[cleanEmail]?.name || 'Valued Customer',
+      mobile: mobile || subs[cleanEmail]?.mobile || '',
+      isSubscribed: true,
+      subscribedAt: subs[cleanEmail]?.subscribedAt || Date.now(),
+      lastUpdated: Date.now(),
+      source
+    };
+
+    saveSubscribers(subs);
+    console.log(`[Newsletter] Subscribed: ${cleanEmail} (${source})`);
+    return res.json({ success: true, message: 'Subscribed successfully', email: cleanEmail });
+  } catch (err) {
+    console.error('Subscribe error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Unsubscribe customer (1-click CAN-SPAM compliance)
+app.all('/api/unsubscribe', async (req, res) => {
+  try {
+    const email = (req.query?.email || req.body?.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ success: false, error: 'Email parameter required' });
+    }
+
+    const subs = loadSubscribers();
+    if (subs[email]) {
+      subs[email].isSubscribed = false;
+      subs[email].unsubscribedAt = Date.now();
+      saveSubscribers(subs);
+    }
+
+    console.log(`[Newsletter] Unsubscribed: ${email}`);
+    if (req.method === 'GET' && !req.xhr && !req.headers.accept?.includes('application/json')) {
+      return res.redirect(`https://vshomecleaningservices.in/unsubscribe.html?unsubscribed=true&email=${encodeURIComponent(email)}`);
+    }
+    return res.json({ success: true, message: 'Unsubscribed successfully', email });
+  } catch (err) {
+    console.error('Unsubscribe error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Send Weekly Luxury Promotional Emails (ONLY to isSubscribed === true)
+app.post('/api/send-weekly-promotions', async (req, res) => {
+  try {
+    if (!emailService || typeof emailService.sendWeeklyPromotionalEmail !== 'function') {
+      return res.status(503).json({ success: false, error: 'Email service unavailable' });
+    }
+
+    const subs = loadSubscribers();
+    const activeSubs = Object.values(subs).filter(s => s && s.isSubscribed === true && s.email);
+
+    if (activeSubs.length === 0) {
+      return res.json({ success: true, count: 0, message: 'No active subscribers found' });
+    }
+
+    console.log(`[Weekly Promo Engine] Disptaching to ${activeSubs.length} verified active subscribers...`);
+
+    const results = [];
+    for (const sub of activeSubs) {
+      try {
+        const sendRes = await emailService.sendWeeklyPromotionalEmail({
+          email: sub.email,
+          name: sub.name,
+          discountCode: 'VSWEEKEND15',
+          discountPercent: '15%'
+        });
+        results.push({ email: sub.email, success: sendRes.success, id: sendRes.emailId });
+
+        if (subs[sub.email]) {
+          subs[sub.email].lastPromoSentAt = Date.now();
+        }
+      } catch (err) {
+        results.push({ email: sub.email, success: false, error: err.message });
+      }
+    }
+
+    saveSubscribers(subs);
+    return res.json({
+      success: true,
+      totalActiveSubscribers: activeSubs.length,
+      dispatched: results
+    });
+  } catch (err) {
+    console.error('Weekly promo dispatch error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// 1.10. AUTOMATED WEEKLY PROMOTIONAL CRON (EVERY SATURDAY 9:00 AM IST)
+// -------------------------------------------------------------------
+let cron = null;
+try {
+  cron = require('node-cron');
+  // Schedule: Every Saturday at 09:00 AM Indian Standard Time (Asia/Kolkata)
+  cron.schedule('0 9 * * 6', async () => {
+    console.log('[Weekly Auto-Cron] Triggering Saturday 9:00 AM Promotional Campaign...');
+    try {
+      if (!emailService || typeof emailService.sendWeeklyPromotionalEmail !== 'function') return;
+      const subs = loadSubscribers();
+      const activeSubs = Object.values(subs).filter(s => s && s.isSubscribed === true && s.email);
+      console.log(`[Weekly Auto-Cron] Sending to ${activeSubs.length} active verified subscribers...`);
+      for (const sub of activeSubs) {
+        try {
+          await emailService.sendWeeklyPromotionalEmail({
+            email: sub.email,
+            name: sub.name,
+            discountCode: 'VSWEEKEND15',
+            discountPercent: '15%'
+          });
+          if (subs[sub.email]) subs[sub.email].lastPromoSentAt = Date.now();
+        } catch (e) {
+          console.error('[Weekly Auto-Cron Single Error]:', sub.email, e.message);
+        }
+      }
+      saveSubscribers(subs);
+      console.log('[Weekly Auto-Cron] Saturday Campaign successfully dispatched to all active subscribers!');
+    } catch (err) {
+      console.error('[Weekly Auto-Cron Failed]:', err.message);
+    }
+  }, {
+    timezone: 'Asia/Kolkata'
+  });
+  console.log('✅ Weekly Promotional Auto-Cron initialized (Every Saturday 9:00 AM IST)');
+} catch (cronErr) {
+  console.log('[Notice] node-cron optional fallback:', cronErr.message);
+}
+
 // 2. API: ORDER & PHONE LOOKUP (FOR AI VOICE & WHATSAPP)
 // -------------------------------------------------------------
 app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/lookup-booking'], async (req, res) => {
