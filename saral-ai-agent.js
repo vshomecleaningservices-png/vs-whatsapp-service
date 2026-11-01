@@ -496,6 +496,14 @@ You are an expert, warm, human-like Customer Support & Operations Problem Solver
    - Zero advance, 100% pay after service (Cash or UPI).
 
 5. Never say "Founder" or "Owner" (refer only to "Senior Operations Manager" or "Executive Support Team").
+
+6. ESCALATION & SPECIAL INQUIRIES (Mr. Vignesh):
+   If the customer:
+   - Wants to talk or speak to Mr. Vignesh / Owner / Senior Operations Manager / Support Team
+   - Inquires about custom high-value work (Villa cleaning, Villa deep clean, Office/Commercial cleaning, Building bulk bookings)
+   - Asks for a callback from a senior manager or has an urgent complaint:
+   Politely assure them that Mr. Vignesh and the executive operations management have been directly notified with their contact details and will call or message them shortly!
+   ALWAYS append [ALERT_FOUNDER: <concise customer inquiry>] to your response so our backend immediately dispatches a real WhatsApp alert to Mr. Vignesh!
 `.trim();
 
   try {
@@ -619,6 +627,27 @@ You are an expert, warm, human-like Customer Support & Operations Problem Solver
 /**
  * Main Saral Conversational Brain
  */
+
+function formatBookingStatus(ref, b) {
+  const partner = b.assignedPartnerName || b.assignedName || 'ஒதுக்கப்பட்டு வருகிறார் (Assigning soon)';
+  const serviceName = b.serviceType || 'Home Cleaning Service';
+  const dateSlot = b.preferredDate ? `${b.preferredDate} (${b.preferredTime || 'Confirmed Slot'})` : 'Confirmed Slot';
+  const totalAmt = b.total || 'As per package';
+  const currentStatus = b.status || 'Confirmed (Booking Received)';
+  const custName = b.name ? `\n👤 *வாடிக்கையாளர்:* ${b.name}` : '';
+  const addr = b.address ? `\n📍 *முகவரி:* ${b.address}` : `\n📍 *நகரம்:* சென்னை (Service Area Verified)`;
+
+  return `🔍 *Booking Status (${ref})*:\n\n` +
+    `🛠️ *Services:* ${serviceName}` +
+    custName +
+    `\n📅 *Slot:* ${dateSlot}\n` +
+    `👤 *Specialist:* **${partner}**` +
+    addr +
+    `\n📊 *Status:* *${currentStatus}*\n` +
+    `💰 *Amount:* ₹${totalAmt} (Pay after service - 100% COD/UPI)\n\n` +
+    `🔍 *Live GPS Tracking:* https://vshomecleaningservices.in/track-booking.html?id=${ref}`;
+}
+
 async function processCustomerMessage(phone, userText, senderPushName, notifier) {
   const session = getSession(phone);
   const text = (userText || '').trim();
@@ -629,7 +658,29 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   }
 
   const p10 = String(session.customerPhone || phone || '').replace(/\D/g, '').slice(-10);
-  const customerBookings = await findCustomerBookings(p10);
+  let customerBookings = await findCustomerBookings(p10);
+
+  // Pre-fetch explicit Booking Reference from Firebase bookingLookup if mentioned in text
+  const orderRefMatch = text.match(/VS-\d{6}-[A-Z0-9]{4}/i) || text.match(/\b(VS-[A-Z0-9-]+)\b/i);
+  let explicitBooking = null;
+  if (orderRefMatch) {
+    const ref = orderRefMatch[0].toUpperCase();
+    try {
+      const res = await fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`);
+      const b = await res.json();
+      if (b && !b.error && (b.serviceType || b.total || b.ref)) {
+        explicitBooking = b;
+        session.bookingRef = ref;
+        customerBookings = [b, ...customerBookings.filter(x => x.ref !== ref)];
+      }
+    } catch (e) {}
+  }
+
+  // If customer purely entered an Order Reference or asked for its status directly
+  if (explicitBooking && (/^VS-[A-Z0-9-]+$/i.test(text.trim()) || lower.includes('status') || lower.includes('details') || lower.includes('track'))) {
+    return formatBookingStatus(explicitBooking.ref, explicitBooking);
+  }
+
   const activeApiKey = (process.env.GEMINI_API_KEY || process.env.XAI_API_KEY || GEMINI_API_KEY || '').trim();
 
   // -------------------------------------------------------------
@@ -676,9 +727,39 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
         } catch (e) {}
       }
 
+      // Check if Founder / Senior Operations Manager (Mr. Vignesh) Alert is triggered
+      const isFounderEscalation = (
+        geminiReply.includes('[ALERT_FOUNDER:') ||
+        lower.includes('villa cleaning') ||
+        lower.includes('villa deep clean') ||
+        lower.includes('villa') ||
+        lower.includes('vignesh') ||
+        (lower.includes('manager') && (lower.includes('call') || lower.includes('pesan') || lower.includes('talk') || lower.includes('contact') || lower.includes('number'))) ||
+        (lower.includes('owner') && (lower.includes('call') || lower.includes('pesan') || lower.includes('talk') || lower.includes('contact') || lower.includes('number')))
+      );
+
+      if (isFounderEscalation && notifier && typeof notifier === 'function') {
+        const alertTopic = geminiReply.match(/\[ALERT_FOUNDER:\s*(.*?)\]/)?.[1] || text;
+        const cleanPhone = String(phone).replace(/\D/g, '');
+        const timeNow = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+        const founderAlert = `🚨 *SARAL ESCALATION ALERT TO MR. VIGNESH* 🚨\n\n` +
+          `👤 *Customer Mobile:* +${cleanPhone}\n` +
+          `💬 *Customer Message:* "${text}"\n` +
+          `📌 *Requirement:* ${alertTopic}\n` +
+          `⏰ *Time:* ${timeNow}\n\n` +
+          `💡 சாரல் வாடிக்கையாளருக்கு பதிலளித்துவிட்டது. தேவைப்பட்டால் நீங்கள் தொடர்பு கொள்ளவும்!`;
+        try {
+          await notifier(FOUNDER_PHONE, founderAlert);
+          console.log(`[Saral Escalation] Real WhatsApp alert dispatched to Mr. Vignesh (${FOUNDER_PHONE})`);
+        } catch (err) {
+          console.error('[Saral Escalation] Failed to notify Mr. Vignesh:', err);
+        }
+      }
+
       return geminiReply
         .replace(/\[CREATE_BOOKING:.*?\]/s, '')
         .replace(/\[ALERT_PARTNER:\s*true\]/gi, '')
+        .replace(/\[ALERT_FOUNDER:.*?\]/gi, '')
         .trim();
     }
   }
@@ -795,18 +876,14 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   if (refMatch) {
     const ref = refMatch[0].toUpperCase();
     try {
-      const res = await fetch(`${FIREBASE_DB_URL}/bookings/${ref}.json`);
-      const b = await res.json();
-      if (b) {
-        const partner = b.assignedPartnerName || b.assignedName || 'ஒதுக்கப்பட்டு வருகிறார் (Assigning soon)';
-        return `🔍 *Booking Status (${ref})*:\n\n` +
-          `🛠️ *Services:* ${b.serviceType}\n` +
-          `📅 *Slot:* ${b.preferredDate} (${b.preferredTime})\n` +
-          `👤 *Specialist:* **${partner}**\n` +
-          `📍 *Address:* ${b.address}\n` +
-          `📊 *Status:* *${b.status}*\n` +
-          `💰 *Amount:* ₹${b.total} (Pay after service)\n\n` +
-          `🔍 *Live GPS Tracking:* https://vshomecleaningservices.in/track-booking.html?id=${ref}`;
+      let res = await fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`);
+      let b = await res.json();
+      if (!b || b.error) {
+        res = await fetch(`${FIREBASE_DB_URL}/bookings/${ref}.json`);
+        b = await res.json();
+      }
+      if (b && !b.error && (b.serviceType || b.total || b.ref)) {
+        return formatBookingStatus(ref, b);
       }
     } catch (e) {}
     return `Sorry, we could not find booking ref *${ref}*. Please check and send the reference code again.`;
