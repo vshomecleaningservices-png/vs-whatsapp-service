@@ -113,8 +113,71 @@ function normalizePhone(phone) {
 /**
  * Start Baileys WhatsApp Socket
  */
+
+// =========================================================================
+// FIREBASE REALTIME CLOUD SESSION PERSISTENCE (24/7 Zero Logout)
+// =========================================================================
+const FIREBASE_SESSION_URL = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/wa_session.json';
+
+async function restoreSessionFromFirebase(authDir) {
+  try {
+    console.log('[Firebase Session] Checking cloud backup for WhatsApp session...');
+    const res = await fetch(FIREBASE_SESSION_URL);
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (data && Array.isArray(data.files) && data.files.length > 0) {
+      if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
+      for (const file of data.files) {
+        if (file.name && file.content) {
+          fs.writeFileSync(path.join(authDir, file.name), file.content, 'utf8');
+        }
+      }
+      console.log(`[Firebase Session] Successfully restored ${data.files.length} auth files from Firebase Cloud!`);
+      return true;
+    }
+  } catch (err) {
+    console.error('[Firebase Session] Restore check failed:', err.message);
+  }
+  return false;
+}
+
+let backupDebounceTimeout = null;
+function backupSessionToFirebase(authDir) {
+  clearTimeout(backupDebounceTimeout);
+  backupDebounceTimeout = setTimeout(async () => {
+    try {
+      if (!fs.existsSync(authDir)) return;
+      const fileNames = fs.readdirSync(authDir);
+      if (!fileNames.includes('creds.json')) return;
+
+      const files = [];
+      for (const name of fileNames) {
+        const filePath = path.join(authDir, name);
+        if (fs.statSync(filePath).isFile()) {
+          const content = fs.readFileSync(filePath, 'utf8');
+          files.push({ name, content });
+        }
+      }
+
+      await fetch(FIREBASE_SESSION_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          updatedAt: new Date().toISOString(),
+          fileCount: files.length,
+          files
+        })
+      });
+      console.log(`[Firebase Session] Successfully backed up ${files.length} auth files to Firebase Cloud!`);
+    } catch (err) {
+      console.error('[Firebase Session] Backup to Firebase failed:', err.message);
+    }
+  }, 2500);
+}
+
 async function startWhatsAppSocket() {
   const authDir = path.join(__dirname, 'auth_info_baileys');
+  await restoreSessionFromFirebase(authDir);
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
   const sock = makeWASocket({
@@ -126,7 +189,7 @@ async function startWhatsAppSocket() {
 
   waSocket = sock;
 
-  sock.ev.on('creds.update', async () => { await saveCreds(); backupSessionToFirebase(authDir); });
+  sock.ev.on('creds.update', async () => { await saveCreds();  });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -161,6 +224,7 @@ async function startWhatsAppSocket() {
     } else if (connection === 'open') {
       connectionStatus = 'connected';
       backupSessionToFirebase(authDir);
+      
       currentQrDataUrl = null;
       connectedPhone = sock.user?.id ? sock.user.id.split(':')[0] : CONFIG.AGENT_PHONE;
       console.log('\n=============================================================');
