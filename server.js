@@ -859,7 +859,7 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
       return res.json({
         found: false,
         query: rawInput,
-        customerSpokenReply: `I checked our system, but could not locate any active booking with that detail. Would you like me to book a cleaning service for you now?`
+        customerSpokenReply: `மன்னிச்சுக்கோங்க, அந்த நம்பர்ல எந்த ஆக்டிவ் புக்கிங்கும் கிடைக்கலங்க. உங்களுக்கு புதுசா கிளீனிங் புக் பண்ணவா?`
       });
     }
 
@@ -894,7 +894,7 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
         address: booking.address,
         total: booking.total,
         status,
-        customerSpokenReply: `Yes! I found your booking for ${serviceType} scheduled for ${scheduledSlot}. Specialist ${partnerName} has been assigned to your service!`
+        customerSpokenReply: `கண்டிப்பாங்க! உங்க ${serviceType} புக்கிங் இருக்கு. நேரம்: ${scheduledSlot}. ஸ்பெஷலிஸ்ட் ${partnerName} உங்க சேவைக்கு ஒதுக்கப்பட்டு இருக்காங்க!`
       });
     } else {
       return res.json({
@@ -906,7 +906,7 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
         address: booking.address,
         total: booking.total,
         status,
-        customerSpokenReply: `I found your booking for ${serviceType} scheduled for ${scheduledSlot}. Our operations hub is currently assigning the nearest specialist to your address!`
+        customerSpokenReply: `உங்க ${serviceType} புக்கிங் உறுதியாகியுள்ளதுங்க! நேரம்: ${scheduledSlot}. உங்களுக்கு பக்கத்துல இருக்கிற கிளீனிங் ஸ்பெஷலிஸ்ட் இப்போ அசைன் ஆகிட்டு இருக்காங்க!`
       });
     }
   } catch (err) {
@@ -1005,6 +1005,85 @@ app.post('/api/partner-status-update', async (req, res) => {
 // -------------------------------------------------------------
 // 3. AI VOICE HELPLINE & FOUNDER SOS (Inbound IVR & Escalations)
 // -------------------------------------------------------------
+
+// -------------------------------------------------------------
+// 2C. API: ESCALATE PARTNER DELAY (VOICE HELPLINE -> PARTNER & OPS ALERT)
+// -------------------------------------------------------------
+app.post('/api/escalate-partner-delay', async (req, res) => {
+  try {
+    const rawCaller = req.body?.customerPhone || req.body?.phone || req.body?.caller || '';
+    const reason = req.body?.reason || 'Customer called regarding cleaner delay';
+    const digitsOnly = String(rawCaller).replace(/\D/g, '');
+    const p10 = digitsOnly.slice(-10);
+
+    console.log(`[Escalate Delay Triggered] Caller: ${p10}, Reason: ${reason}`);
+
+    // 1. Fetch active booking from Firebase
+    const fbRes = await fetch('https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings.json');
+    const allBookings = await fbRes.json() || {};
+    
+    let matchedBooking = null;
+    let matchedRef = null;
+
+    for (const [refKey, b] of Object.entries(allBookings)) {
+      if (!b) continue;
+      const bMobile = String(b.mobile || b.customerMobile || '').replace(/\D/g, '').slice(-10);
+      if (bMobile === p10) {
+        matchedBooking = b;
+        matchedRef = refKey;
+        break;
+      }
+    }
+
+    if (!matchedBooking) {
+      return res.json({
+        success: true,
+        actionTaken: 'Logged generic enquiry',
+        customerSpokenReply: 'மன்னிச்சுக்கோங்க, உங்க நம்பர்ல ஆக்டிவ் புக்கிங் எதுவும் காட்டலங்க. எங்க சீனியர் மேனேஜர் 10 நிமிஷத்துல உங்களுக்கு நேரடியா கால் பண்ணுவாங்க!'
+      });
+    }
+
+    const partnerName = matchedBooking.assignedPartnerName || matchedBooking.assignedName || 'Assigned Specialist';
+    const partnerPhone = matchedBooking.assignedPartnerMobile || matchedBooking.assignedMobile || null;
+    const serviceType = matchedBooking.serviceType || 'Home Cleaning';
+    const cName = matchedBooking.name || 'Customer';
+
+    // 2. Alert the assigned Partner immediately via WhatsApp
+    if (partnerPhone && typeof sendWhatsAppMessage === 'function') {
+      const pClean = normalizePhone(partnerPhone);
+      const partnerUrgentAlert = `🚨 *URGENT CUSTOMER HELPLINE ALERT* 🚨\n\n` +
+        `வணக்கம் *${partnerName}*!\n` +
+        `வாடிக்கையாளர் *${cName}* (${matchedRef}) இப்போது ஹெல்ப்லைனில் அழைத்து தாமதம் குறித்து கேட்டுள்ளார்!\n\n` +
+        `📍 *முகவரி:* ${matchedBooking.address}\n` +
+        `🧹 *சர்வீஸ்:* ${serviceType}\n` +
+        `⚠️ *விபரம்:* ${reason}\n\n` +
+        `உடனடியாக வாடிக்கையாளருக்கு அழைத்து நிலவரத்தைத் தெரிவிக்கவும் அல்லது Partner App-ல் 'On the way' அப்டேட் செய்யவும்! ⚡`;
+
+      await sendWhatsAppMessage(pClean, partnerUrgentAlert).catch(e => console.error('[Partner Alert Error]:', e.message));
+    }
+
+    // 3. Trigger Founder / Operations Manager SOS
+    if (typeof triggerFounderSosCall === 'function') {
+      await triggerFounderSosCall({
+        incidentKey: `delay_${matchedRef}_${Date.now()}`,
+        ref: matchedRef,
+        reason: `Cleaner delay escalation: ${reason}`,
+        details: `Partner ${partnerName} (${partnerPhone || 'No Phone'}) assigned to ${cName} (${p10})`
+      }).catch(e => console.error('[Founder SOS Error]:', e.message));
+    }
+
+    return res.json({
+      success: true,
+      ref: matchedRef,
+      partnerName,
+      customerSpokenReply: `நான் இப்போதே உங்க ஸ்பெஷலிஸ்ட் ${partnerName}-க்கு ஹை-பிரையாரிட்டி அலெர்ட் அனுப்பியிருக்கேங்க! அவங்க உடனே உங்களை தொடர்பு கொண்டு நேர்ல வந்துடுவாங்க. கவலைப்படாதீங்க!`
+    });
+  } catch (err) {
+    console.error('[escalate-partner-delay error]:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/voice/incoming', (req, res) => {
   const caller = req.body.From || req.body.Caller || 'Unknown';
   console.log(`📞 [Inbound Voice Call] Incoming call from: ${caller}`);
