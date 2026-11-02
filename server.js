@@ -214,14 +214,15 @@ async function startWhatsAppSocket() {
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
       connectionStatus = 'disconnected';
-      console.log(`[WhatsApp Connection Closed] Code: ${statusCode}, Reconnecting: ${shouldReconnect}`);
-      if (shouldReconnect) {
-        setTimeout(startWhatsAppSocket, 3000);
-      } else {
-        console.log('[WhatsApp Logged Out] Removing auth and resetting...');
+      console.log(`[WhatsApp Connection Closed] Code: ${statusCode}, IsLoggedOut: ${isLoggedOut}`);
+      if (isLoggedOut) {
+        console.log('[WhatsApp Logged Out] Removing auth and resetting Firebase backup...');
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch (e) {}
+        try { fetch(FIREBASE_SESSION_URL, { method: 'DELETE' }); } catch (e) {}
+        setTimeout(startWhatsAppSocket, 2000);
+      } else {
         setTimeout(startWhatsAppSocket, 3000);
       }
     } else if (connection === 'open') {
@@ -404,6 +405,22 @@ app.get('/', (req, res) => {
 // -------------------------------------------------------------
 app.get('/ping', (req, res) => res.json({ status: 'ok', time: Date.now(), connected: connectionStatus === 'connected' }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime(), agent: CONFIG.AGENT_NAME }));
+app.get('/reset', async (req, res) => {
+  try {
+    const authDir = path.join(__dirname, 'auth_info_baileys');
+    try { fs.rmSync(authDir, { recursive: true, force: true }); } catch (e) {}
+    try { await fetch(FIREBASE_SESSION_URL, { method: 'DELETE' }); } catch (e) {}
+    currentQrDataUrl = null;
+    connectionStatus = 'connecting';
+    if (waSocket) {
+      try { waSocket.end(); } catch (e) {}
+    }
+    setTimeout(startWhatsAppSocket, 1000);
+    res.send('<h2>Resetting session... Redirecting to QR in 2 seconds...</h2><script>setTimeout(() => window.location.href = "/", 2000);</script>');
+  } catch (err) {
+    res.status(500).send('Error resetting: ' + err.message);
+  }
+});
 
 // -------------------------------------------------------------
 // 1. API: BOOKING CONFIRMATION
