@@ -371,7 +371,7 @@ async function findCustomerBookings(phone) {
 /**
  * Save booking into Firebase RTDB (Singapore)
  */
-async function saveBookingToFirebase(session) {
+async function saveBookingToFirebase(session, notifier) {
   const ref = session.pendingRef || generateRef();
   session.pendingRef = null;
   const total = session.services.reduce((sum, s) => sum + s.price, 0) || 499;
@@ -387,7 +387,7 @@ async function saveBookingToFirebase(session) {
     pincode: session.pincode || '600001',
     preferredDate: session.date || new Date().toISOString().split('T')[0],
     preferredTime: session.time || '10:00 AM - 12:00 PM',
-    status: 'Booking Received',
+    status: 'Team Assigned',
     paymentType: 'COD',
     paymentMethod: 'Cash on Service / UPI',
     total,
@@ -397,29 +397,118 @@ async function saveBookingToFirebase(session) {
     notes: 'Booked autonomously via WhatsApp Saral'
   };
 
+  // Resolve Partner for Auto-Assignment
+  let partnerUid = 'partner-1';
+  let partnerName = 'Vignesh S';
+  let partnerPhone = '916383458190';
+
   try {
+    const pRes = await fetch(`${FIREBASE_DB_URL}/partners.json`);
+    const pData = await pRes.json();
+    if (pData && !pData.error && typeof pData === 'object') {
+      const keys = Object.keys(pData);
+      for (const k of keys) {
+        if (pData[k] && (pData[k].accountStatus === 'active' || !pData[k].accountStatus)) {
+          partnerUid = k;
+          partnerName = pData[k].name || 'Vignesh S';
+          partnerPhone = pData[k].phone || pData[k].phoneNumber || '916383458190';
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    console.log('[Partner lookup fallback to default partner]');
+  }
+
+  bookingData.assignedTo = partnerUid;
+  bookingData.assignedPartnerName = partnerName;
+  bookingData.assignedPartnerMobile = partnerPhone;
+
+  try {
+    // 1. Save Booking in Firebase /bookings
     await fetch(`${FIREBASE_DB_URL}/bookings/${ref}.json`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bookingData)
     });
 
+    // 2. Save Tracking Mirror in Firebase /bookingLookup
     await fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ref,
-        status: 'Booking Received',
+        status: 'Team Assigned',
         serviceType: bookingData.serviceType,
         total,
         preferredDate: bookingData.preferredDate,
         preferredTime: bookingData.preferredTime,
         customerName: bookingData.name,
-        customerMobile: mobile
+        customerMobile: mobile,
+        assignedPartnerName: partnerName
       })
     });
 
-    console.log(`✓ [Firebase Booking Created by Saral]: ${ref}`);
+    // 3. Write Job to Partner App (/partnerJobs/{partnerUid}/{ref})
+    const partnerJobPayload = {
+      bookingRef: ref,
+      serviceType: bookingData.serviceType,
+      category: 'cleaning',
+      customerName: bookingData.name,
+      customerPhone: mobile,
+      address: bookingData.address,
+      area: bookingData.pincode || 'Chennai',
+      distance: '2.5 km',
+      date: bookingData.preferredDate,
+      time: bookingData.preferredTime,
+      price: total,
+      serviceValue: total,
+      commission: Math.round(total * 0.15),
+      netEarnings: Math.round(total * 0.85),
+      status: 'pending',
+      scheduledTimeGroup: 'upcoming',
+      assignedPartnerId: partnerUid,
+      createdAt: Date.now()
+    };
+
+    await fetch(`${FIREBASE_DB_URL}/partnerJobs/${partnerUid}/${ref}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(partnerJobPayload)
+    });
+
+    // 4. Write Notification to Partner
+    await fetch(`${FIREBASE_DB_URL}/partnerNotifications/${partnerUid}/notif_${Date.now()}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'New Job Assigned!',
+        description: `New ${bookingData.serviceType} at ${bookingData.address}`,
+        time: 'Just now',
+        category: 'Jobs',
+        unread: true,
+        actionScreen: 'job_detail',
+        jobId: ref,
+        createdAt: Date.now()
+      })
+    });
+
+    // 5. WhatsApp Alert to Partner
+    if (notifier && partnerPhone) {
+      const pClean = partnerPhone.replace(/\D/g, '');
+      const partnerAlertMsg = `🔔 *NEW CLEANING JOB ASSIGNED!* 🔔\n\n` +
+        `வணக்கம் *${partnerName}*!\n` +
+        `உங்களுக்கு ஒரு புதிய பணி ஒதுக்கப்பட்டுள்ளது.\n\n` +
+        `🔖 *Job Ref:* ${ref}\n` +
+        `🛠️ *Service:* ${bookingData.serviceType}\n` +
+        `🗓️ *Slot:* ${bookingData.preferredDate} (${bookingData.preferredTime})\n` +
+        `📍 *Address:* ${bookingData.address}\n\n` +
+        `📲 *VS Partner App*-ல் உடனடியாக Accept செய்யவும்:\n` +
+        `Partner App: http://localhost:5173/`;
+      notifier(pClean, partnerAlertMsg).catch(() => {});
+    }
+
+    console.log(`✅ [Firebase Booking & Partner Job Created]: ${ref} -> Assigned to ${partnerName} (${partnerUid})`);
     return bookingData;
   } catch (err) {
     console.error('Firebase save error from WhatsApp Saral:', err);
@@ -467,7 +556,7 @@ Catalog & Starting Rates:
 - Full Home Deep Cleaning: 1BHK ₹1499, 2BHK ₹1999, 3BHK ₹2499
 - Balcony & Window Cleaning: ₹499
 - Add-on services (cupboards, fridge, fans, lofts): from ₹69
-Terms: Zero advance, 100% pay after service (Cash or UPI). Safe eco-friendly Diversey solutions (zero acid, child & pet safe).
+Terms: Zero advance, 100% pay after service (Cash, UPI or Official Razorpay: https://razorpay.me/@vshomecleaningservices). Safe eco-friendly Diversey solutions (zero acid, child & pet safe).
 
 YOUR CONVERSATIONAL INTELLIGENCE & ROLE:
 You are an expert, warm, human-like Customer Support & Operations Problem Solver — NOT a rigid booking robot.
@@ -714,7 +803,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
           session.address = parsed.address;
           session.date = parsed.date;
           session.time = parsed.time;
-          const booking = await saveBookingToFirebase(session);
+          const booking = await saveBookingToFirebase(session, notifier);
           session.services = [];
           session.address = null;
 
@@ -905,7 +994,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   }
 
   if (lower.includes('payment') || lower.includes('gpay') || lower.includes('advance') || lower.includes('பணம்')) {
-    return `💳 **Payment Policy:**\n\nYou do NOT need to pay any advance! 100% Pay After Service. 👍 You can pay via UPI (GPay/PhonePe) or Cash after the specialist completes the work. 😊`;
+    return `💳 **Payment Policy:**\n\nYou do NOT need to pay any advance! 100% Pay After Service. 👍 You can pay via UPI (GPay/PhonePe), Cash, or through our **Official Verified Razorpay Payment Link:**\n👉 https://razorpay.me/@vshomecleaningservices\n(Supports all UPI apps, Credit/Debit Cards & NetBanking) 😊`;
   }
 
   if (lower.includes('owner') || lower.includes('founder') || lower.includes('vignesh') || lower.includes('manager') || lower.includes('support team')) {
