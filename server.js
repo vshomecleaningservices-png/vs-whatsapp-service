@@ -93,6 +93,7 @@ let connectionStatus = 'connecting'; // 'connecting' | 'qr_ready' | 'connected' 
 let connectedPhone = null;
 
 const dispatchLogs = [];
+const processedMsgIds = new Set();
 function logDispatch(type, to, summary, status) {
   dispatchLogs.unshift({
     id: 'WA-' + Date.now().toString(36).toUpperCase(),
@@ -243,6 +244,16 @@ async function startWhatsAppSocket() {
     if (m.type === 'notify') {
       for (const msg of m.messages) {
         if (!msg.key.fromMe && msg.key.remoteJid && !msg.key.remoteJid.includes('@g.us')) {
+          const msgId = msg.key?.id;
+          if (msgId && processedMsgIds.has(msgId)) continue;
+          if (msgId) {
+            processedMsgIds.add(msgId);
+            if (processedMsgIds.size > 2000) {
+              const firstKey = processedMsgIds.values().next().value;
+              processedMsgIds.delete(firstKey);
+            }
+          }
+
           const senderJid = msg.key.remoteJid;
           const senderPhone = senderJid.split('@')[0];
           const pushName = msg.pushName || '';
