@@ -46,11 +46,13 @@ const WEBSITE_URL = 'https://vshomecleaningservices.in';
 const sessions = new Map();
 
 function getSession(phone) {
-  const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
+  const digits = String(phone).replace(/\D/g, '');
+  const cleanPhone = digits.length >= 10 ? digits.slice(-10) : digits;
+  const isValidMobile = /^[6-9]\d{9}$/.test(cleanPhone);
   if (!sessions.has(cleanPhone)) {
     sessions.set(cleanPhone, {
       phone: cleanPhone,
-      customerPhone: cleanPhone,
+      customerPhone: isValidMobile ? cleanPhone : null,
       name: null,
       lang: null,
       stage: 'asking_lang',
@@ -396,7 +398,7 @@ async function saveBookingToFirebase(session, notifier) {
   const ref = session.pendingRef || generateRef();
   session.pendingRef = null;
   const total = session.services.reduce((sum, s) => sum + s.price, 0) || 499;
-  const mobile = (session.customerPhone || session.phone || '9999999999').replace(/\D/g, '').slice(-10);
+  const mobile = (/^[6-9]\d{9}$/.test(session.customerPhone) ? session.customerPhone : (/^[6-9]\d{9}$/.test(session.phone) ? session.phone : '7200910738'));
   const serviceNames = session.services.map(s => s.name).join(' + ') || 'Classic Bathroom Cleaning';
 
   const bookingData = {
@@ -451,22 +453,36 @@ async function saveBookingToFirebase(session, notifier) {
       body: JSON.stringify(bookingData)
     });
 
-    // 2. Write to /bookingLookup
-    await fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ref,
-        status: 'Team Assigned',
-        serviceType: bookingData.serviceType,
-        total,
-        preferredDate: bookingData.preferredDate,
-        preferredTime: bookingData.preferredTime,
-        customerName: bookingData.name,
-        customerMobile: mobile,
-        assignedPartnerName: partnerName
+    // 2. Write to /bookingLookup, phone mirror, and recent_bookings
+    const lookupRecord = {
+      ref,
+      status: 'Team Assigned',
+      serviceType: bookingData.serviceType,
+      total,
+      preferredDate: bookingData.preferredDate,
+      preferredTime: bookingData.preferredTime,
+      customerName: bookingData.name,
+      customerMobile: mobile,
+      assignedPartnerName: partnerName
+    };
+    const p10 = String(mobile).replace(/\D/g, '').slice(-10);
+    await Promise.allSettled([
+      fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lookupRecord)
+      }),
+      p10 ? fetch(`${FIREBASE_DB_URL}/bookingLookup/by_phone_${p10}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lookupRecord)
+      }) : Promise.resolve(),
+      fetch(`${FIREBASE_DB_URL}/bookingLookup/recent_bookings/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lookupRecord)
       })
-    });
+    ]);
 
     // 3. Write to /partnerJobs
     const partnerJobPayload = {
@@ -584,6 +600,12 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   const text = (userText || '').trim();
   const lower = text.toLowerCase();
 
+  // Extract real 10-digit mobile number if customer mentions it in message or address
+  const phoneInText = text.match(/\b[6-9]\d{9}\b/);
+  if (phoneInText) {
+    session.customerPhone = phoneInText[0];
+  }
+
   if (senderPushName && !session.name) {
     session.name = senderPushName.replace(/[^\w\s]/gi, '').trim() || null;
   }
@@ -685,6 +707,20 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   // 5. Capture Date & Time Slot
   const dt = extractDateAndTime(text);
+
+  // Smart slot matching for simple texts like '10', '10am', 'morning', 'afternoon'
+  const isMorning = lower.includes('morning') || lower === '10' || lower === '10 am' || lower === '10am' || lower.includes('8') || lower.includes('8am');
+  const isAfternoon = lower.includes('afternoon') || lower === '2' || lower === '2 pm' || lower === '2pm';
+  const isEvening = lower.includes('evening') || lower === '4' || lower === '4 pm' || lower === '4pm';
+
+  if (!dt.time) {
+    if (isMorning) dt.time = '10:00 AM - 12:00 PM';
+    else if (isAfternoon) dt.time = '02:00 PM - 04:00 PM';
+    else if (isEvening) dt.time = '04:00 PM - 06:00 PM';
+  }
+  if (!dt.date && dt.time) {
+    dt.date = 'Tomorrow';
+  }
   if (dt.date || dt.time) {
     if (dt.date) session.date = dt.date;
     if (dt.time) session.time = dt.time;
@@ -764,3 +800,4 @@ module.exports = {
   handleCartOrder,
   saveBookingToFirebase
 };
+
