@@ -42,31 +42,6 @@ const FIREBASE_DB_URL = 'https://vs-home-cleaning-services-default-rtdb.asia-sou
 const FOUNDER_PHONE = '916383458190';
 const WEBSITE_URL = 'https://vshomecleaningservices.in';
 
-// Official Catalog Rate-Card for Chennai
-const SERVICES = {
-  bathroom: [
-    { id: 'b_classic', name: 'Classic Bathroom Cleaning', price: 499, duration: '45 mins', desc: 'Manual tile, basin, taps & toilet scrubbing' },
-    { id: 'b_premium', name: 'Premium Bathroom Cleaning', price: 549, duration: '60 mins', desc: 'Single-disc machine floor & wall deep scrub' },
-    { id: 'b_eco', name: 'Eco Smart Bathroom Cleaning', price: 549, duration: '60 mins', desc: 'Diversey Taski eco chemicals + odor control' },
-    { id: 'b_movein', name: 'Move-in Bathroom Cleaning', price: 599, duration: '75 mins', desc: 'Hard water scale removal & acid-free restoration' }
-  ],
-  kitchen: [
-    { id: 'k_standard', name: 'Occupied Kitchen without Chimney', price: 1199, duration: '2.5 hrs', desc: 'Cabinets outside, counter, gas stove, tile degreasing' },
-    { id: 'k_deep', name: 'Occupied Kitchen with Chimney', price: 1499, duration: '3.5 hrs', desc: 'Complete degreasing + chimney mesh steam de-carbonization' },
-    { id: 'k_empty', name: 'Empty / Move-in Kitchen Cleaning', price: 999, duration: '2 hrs', desc: 'Inside & outside empty cabinets + counters' }
-  ],
-  sofa: [
-    { id: 's_3seater', name: '3-Seater Fabric Sofa Shampooing', price: 899, duration: '1 hr', desc: 'Injection-extraction shampoo & stain treatment' },
-    { id: 's_5seater', name: '5-Seater Sofa Shampooing (3+1+1)', price: 1399, duration: '1.5 hrs', desc: 'Deep suction shampooing' },
-    { id: 's_7seater', name: '7-Seater / L-Shape Sofa Shampooing', price: 1899, duration: '2 hrs', desc: 'Complete deep fabric shampoo & extraction' }
-  ],
-  fullhome: [
-    { id: 'h_1bhk', name: '1 BHK Full Home Deep Cleaning', price: 2499, duration: '4-5 hrs', desc: 'Hall, bedroom, kitchen, bath mechanized deep clean' },
-    { id: 'h_2bhk', name: '2 BHK Full Home Deep Cleaning', price: 3499, duration: '5-6 hrs', desc: 'Complete 2BHK mechanized single-disc scrubbing' },
-    { id: 'h_3bhk', name: '3 BHK Full Home Deep Cleaning', price: 4799, duration: '6-8 hrs', desc: 'Complete 3BHK deep clean with 3-4 member crew' }
-  ]
-};
-
 // In-Memory Sessions
 const sessions = new Map();
 
@@ -77,8 +52,8 @@ function getSession(phone) {
       phone: cleanPhone,
       customerPhone: cleanPhone,
       name: null,
-      lang: null, // 'en' | 'ta' | 'tanglish' | 'hi' | 'te' | 'kn'
-      stage: 'asking_lang', // 'asking_lang' | 'cart_received' | 'asking_details' | 'confirming' | 'completed'
+      lang: null,
+      stage: 'asking_lang',
       cart: null,
       services: [],
       address: null,
@@ -364,12 +339,12 @@ Specialist complete mechanized equipment-oda on-time-la vandhuduvaanga. Thank yo
 // -------------------------------------------------------------
 function detectLanguageChoice(text) {
   const t = text.trim().toLowerCase();
-  if (t === '1' || t === 'english' || t === 'en') return 'en';
-  if (t === '2' || t === 'tamil' || t === 'தமிழ்' || t === 'ta') return 'ta';
+  if (t === '1' || t === 'english' || t === 'eng') return 'en';
+  if (t === '2' || t === 'tamil' || t === 'தமிழ்' || t === 'tam') return 'ta';
   if (t === '3' || t === 'tanglish') return 'tanglish';
-  if (t === '4' || t === 'hindi' || t === 'हिन्दी' || t === 'hi') return 'hi';
-  if (t === '5' || t === 'telugu' || t === 'తెలుగు' || t === 'te') return 'te';
-  if (t === '6' || t === 'kannada' || t === 'ಕನ್ನಡ' || t === 'kn') return 'kn';
+  if (t === '4' || t === 'hindi' || t === 'हिन्दी') return 'hi';
+  if (t === '5' || t === 'telugu' || t === 'తెలుగు') return 'te';
+  if (t === '6' || t === 'kannada' || t === 'ಕನ್ನಡ') return 'kn';
   return null;
 }
 
@@ -613,7 +588,13 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     session.name = senderPushName.replace(/[^\w\s]/gi, '').trim() || null;
   }
 
-  // 1. Language Selection Check
+  // 1. GREETINGS (Hi, Hello, Hey, Menu, Language) -> ALWAYS SHOW 6-LANGUAGE MENU!
+  const isGreeting = ['hi', 'hello', 'hey', 'வணக்கம்', 'namaste', 'start', 'menu', 'vanakkam', 'language', 'change language'].includes(lower);
+  if (isGreeting) {
+    return I18N.welcome;
+  }
+
+  // 2. Language Selection Check (1 to 6)
   const pickedLang = detectLanguageChoice(text);
   if (pickedLang) {
     session.lang = pickedLang;
@@ -645,12 +626,6 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       kn: "ಭಾಷೆಯನ್ನು ಕನ್ನಡಕ್ಕೆ ಹೊಂದಿಸಲಾಗಿದೆ! 👍\nಇಂದು ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು? ಬಾತ್‌ರೂಮ್, ಕಿಚನ್, ಸೋಫಾ ಅಥವಾ ಪೂರ್ಣ ಮನೆ ಶುಚಿಗೊಳಿಸುವಿಕೆ?"
     };
     return langAck[lang];
-  }
-
-  // 2. Greetings without prior language
-  const isGreeting = ['hi', 'hello', 'hey', 'வணக்கம்', 'namaste', 'start', 'menu'].includes(lower);
-  if (isGreeting && !session.lang) {
-    return I18N.welcome;
   }
 
   // Fallback language to English if not chosen yet
@@ -777,7 +752,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     ta: "VS Home Cleaning Services-ஐ தொடர்பு கொண்டதற்கு நன்றி! 🧹✨\nஉங்களுக்கு என்ன சேவை தேவைப்படுகிறது என்று கூறினால் உடனே ஸ்பெஷலிஸ்ட்டை ஏற்பாடு செய்கிறேன்.",
     tanglish: "VS Home Cleaning Services contact pannadhuku nandri! 🧹✨\nUngaluku enna cleaning service venum nu sonna odaney specialist assign pannidalaam.",
     hi: "VS Home Cleaning Services से संपर्क करने के लिए धन्यवाद! 🧹✨\nकृपया बताएं कि आपको किस सेवा की आवश्यकता है।",
-    te: "VS Home Cleaning Services ని సంప్రదించినందుకు ధన్యవాದాలు! 🧹✨\nదయచేసి మీకు ఏ సేవ అవసరమో చెప్పండి.",
+    te: "VS Home Cleaning Services ని సంప్రదించినందుకు ధన్యవాదాలు! 🧹✨\nదయచేసి మీకు ఏ సేవ అవసరమో చెప్పండి.",
     kn: "VS Home Cleaning Services ಸಂಪರ್ಕಿಸಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು! 🧹✨\nದಯವಿಟ್ಟು ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು ಎಂದು ತಿಳಿಸಿ."
   };
 
@@ -787,6 +762,5 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 module.exports = {
   processCustomerMessage,
   handleCartOrder,
-  saveBookingToFirebase,
-  SERVICES
+  saveBookingToFirebase
 };
