@@ -9,7 +9,8 @@
 try { require('dotenv').config(); } catch (e) {}
 
 const express = require('express');
-const Razorpay = require('razorpay');
+let Razorpay = null;
+try { Razorpay = require('razorpay'); } catch (e) { console.log('[Notice] razorpay optional fallback:', e.message); }
 const crypto = require('crypto');
 const cors = require('cors');
 const QRCode = require('qrcode');
@@ -74,14 +75,16 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma'
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
 
 let razorpay = null;
-try {
-  razorpay = new Razorpay({
-    key_id: RAZORPAY_KEY_ID,
-    key_secret: RAZORPAY_KEY_SECRET
-  });
-  console.log('✅ Razorpay SDK initialized successfully with Key:', RAZORPAY_KEY_ID);
-} catch (rErr) {
-  console.error('Failed to initialize Razorpay SDK:', rErr.message);
+if (Razorpay) {
+  try {
+    razorpay = new Razorpay({
+      key_id: RAZORPAY_KEY_ID,
+      key_secret: RAZORPAY_KEY_SECRET
+    });
+    console.log('✅ Razorpay SDK initialized successfully with Key:', RAZORPAY_KEY_ID);
+  } catch (rErr) {
+    console.error('Failed to initialize Razorpay SDK:', rErr.message);
+  }
 }
 
 let waSocket = null;
