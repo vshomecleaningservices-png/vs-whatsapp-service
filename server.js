@@ -126,7 +126,7 @@ async function startWhatsAppSocket() {
 
   waSocket = sock;
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', async () => { await saveCreds(); backupSessionToFirebase(authDir); });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -160,6 +160,7 @@ async function startWhatsAppSocket() {
       }
     } else if (connection === 'open') {
       connectionStatus = 'connected';
+      backupSessionToFirebase(authDir);
       currentQrDataUrl = null;
       connectedPhone = sock.user?.id ? sock.user.id.split(':')[0] : CONFIG.AGENT_PHONE;
       console.log('\n=============================================================');
