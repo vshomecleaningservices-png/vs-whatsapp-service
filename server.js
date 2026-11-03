@@ -478,27 +478,85 @@ app.post('/api/send-confirmation', async (req, res) => {
     await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
     logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
 
-    // ✅ Auto-assign to partner: write to Firebase partnerJobs
+    // ✅ Automated Email Dispatch (Customer Confirmation + Founder Alert)
+    if (emailService) {
+      const emailPayload = {
+        ref,
+        name,
+        email: req.body?.email || null,
+        mobile: phone,
+        serviceType: service,
+        preferredDate: date,
+        preferredTime: time,
+        total,
+        address
+      };
+      Promise.allSettled([
+        emailService.sendBookingConfirmationEmail(emailPayload),
+        emailService.sendFounderAlertEmail(emailPayload)
+      ]).catch(e => console.error('[Email Notice]:', e.message));
+    }
+
+    // ✅ Auto-assign to partner: check availability and write to Firebase partnerJobs
     try {
       const FIREBASE_DB = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
-      // Find active partner
       let partnerUid = 'partner-1';
       let partnerName = 'Vignesh S';
       let partnerPhone = '916383458190';
+      let isPartnerAvailable = true;
+
       try {
-        const pRes = await fetch(`${FIREBASE_DB}/partners.json`);
+        const pRes = await fetch(`${FIREBASE_DB}/bookingLookup/partners.json`);
         const pData = await pRes.json();
-        if (pData && !pData.error && typeof pData === 'object') {
+        if (pData && !pData.error && typeof pData === 'object' && Object.keys(pData).length > 0) {
+          let foundFreePartner = false;
+          // Check existing bookings for collision
+          let existingBookings = {};
+          try {
+            const bRes = await fetch(`${FIREBASE_DB}/bookingLookup/recent_bookings.json`);
+            existingBookings = (await bRes.json()) || {};
+          } catch (e) {}
+
           for (const k of Object.keys(pData)) {
-            if (pData[k] && (pData[k].accountStatus === 'active' || !pData[k].accountStatus)) {
-              partnerUid = k;
-              partnerName = pData[k].name || 'Vignesh S';
-              partnerPhone = pData[k].phone || pData[k].phoneNumber || '916383458190';
-              break;
+            const p = pData[k];
+            if (p && (p.accountStatus === 'active' || !p.accountStatus)) {
+              let isBusy = false;
+              for (const b of Object.values(existingBookings)) {
+                if (!b || b.status === 'cancelled') continue;
+                if (b.assignedTo === k && String(b.preferredDate || '').trim() === String(date || '').trim() && String(b.preferredTime || '').trim() === String(time || '').trim()) {
+                  isBusy = true;
+                  break;
+                }
+              }
+              if (!isBusy) {
+                partnerUid = k;
+                partnerName = p.name || 'Vignesh S';
+                partnerPhone = p.phone || p.phoneNumber || '916383458190';
+                foundFreePartner = true;
+                break;
+              }
             }
+          }
+          if (!foundFreePartner) {
+            isPartnerAvailable = false;
           }
         }
       } catch (e) {}
+
+      if (!isPartnerAvailable) {
+        // Specialist busy/unavailable alert to partner & founder
+        const alertMsg = `🚨 *NO SPECIALIST AVAILABLE (Website Booking)* 🚨\n\n` +
+          `வாடிக்கையாளர்: ${name} (+${phone})\n` +
+          `கேட்ட தேதி & நேரம்: ${date} (${time})\n` +
+          `சேவை: ${service}\n` +
+          `முகவரி: ${address}\n` +
+          `தொகை: ₹${total}\n` +
+          `Ref: ${ref}\n\n` +
+          `⚠️ அந்த நேரத்தில் அனைத்து ஸ்பெஷலிஸ்ட்டுகளும் பிஸியாக உள்ளதால் ஆட்டோ-அசைன் ஆகவில்லை.\n` +
+          `தயவுசெய்து உடனடியாக வாடிக்கையாளரைத் தொடர்புகொண்டு மேனுவலாக நேரத்தை அசைன் செய்யவும்! ⚡`;
+        await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, alertMsg);
+        logDispatch('No Specialist Alert', CONFIG.ADMIN_PHONE, `Ref: ${ref}`, 'Delivered');
+      } else {
 
       const jobPayload = {
         bookingRef: ref,
@@ -560,6 +618,7 @@ app.post('/api/send-confirmation', async (req, res) => {
         `⚡ Admin Dashboard: https://vshomecleaningservices.in/admin.html`;
       await sendWhatsAppMessage(partnerPhone, partMsg);
       logDispatch('Job Alert (Partner - Website)', partnerPhone, `Job: ${ref}`, 'Delivered');
+      } // close else
 
     } catch (assignErr) {
       console.error('[Auto-Assign Notice]:', assignErr.message);
@@ -936,14 +995,16 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
     // B. Direct request parameters
     if (!rawInput) {
       rawInput = req.body?.query || req.body?.phone || req.body?.mobile || req.body?.ref || req.body?.order_id ||
-                 req.query?.query || req.query?.phone || req.query?.mobile || req.query?.ref || '';
+                 req.query?.query || req.query?.phone || req.query?.mobile || req.query?.ref || req.query?.customerPhone || '';
     }
 
-    // C. Fallback to caller phone from Vapi
-    const callerPhone = req.body?.message?.call?.customer?.number ||
+    // C. Fallback to caller phone from Vapi (URL query & webhook payload)
+    const callerPhone = req.query?.customerPhone ||
+                        req.query?.caller ||
+                        req.body?.customerPhone ||
+                        req.body?.message?.call?.customer?.number ||
                         req.body?.message?.customer?.number ||
-                        req.body?.call?.customer?.number ||
-                        req.body?.customerPhone || '';
+                        req.body?.call?.customer?.number || '';
 
     if (!rawInput && callerPhone) {
       rawInput = callerPhone;
