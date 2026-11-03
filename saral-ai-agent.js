@@ -13,6 +13,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
+try { dns.setDefaultResultOrder('ipv4first'); } catch (e) {}
 
 const FIREBASE_DB_URL = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
 const FOUNDER_PHONE   = '916383458190';
@@ -338,16 +340,22 @@ function extractDateAndTime(text) {
 }
 
 // ─────────────────────────────────────────────
-// Gemini LLM Caller (gemini-3.6-flash)
+// Gemini LLM Caller (Multi-Model Resilient)
 // ─────────────────────────────────────────────
+const CANDIDATE_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3.1-flash-lite',
+  'gemini-3.8-flash'
+];
+
 async function askGemini(prompt, systemInstruction, history = []) {
   const apiKey = await getGeminiKey();
   if (!apiKey) {
     console.warn('[Gemini Notice]: Gemini API Key not found');
     return null;
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
-  
+
   const contents = [];
   const recentHistory = history.slice(-4);
   for (const h of recentHistory) {
@@ -366,27 +374,36 @@ async function askGemini(prompt, systemInstruction, history = []) {
     }
   };
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  // Try each model in sequence
+  for (const model of CANDIDATE_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 16000);
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
 
-    if (res.ok) {
-      const data = await res.json();
-      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (reply && reply.trim()) return reply.trim();
+      if (res.ok) {
+        const data = await res.json();
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (reply && reply.trim()) {
+          return reply.trim();
+        }
+      } else {
+        console.warn(`[Gemini ${model}]: Status ${res.status}, trying next model...`);
+      }
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.warn(`[Gemini ${model} Error]:`, err.message);
     }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    console.error('[Gemini API Notice]:', err.message);
   }
+
   return null;
 }
 
@@ -531,7 +548,15 @@ INSTRUCTIONS FOR THIS TURN:
   // 6. Fallback in case of Gemini timeout/offline
   if (!finalReply) {
     if (activeBooking) {
-      finalReply = `Vanakkam! Unga booking Ref: *${activeBooking.ref}* paathen. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10 AM'}). Edhavadhu emergency-na sollunga, udane coordinate panren! 🙏`;
+      if (/payment|amount|total|charge|evvalavu|panam|cost|fee/i.test(lower)) {
+        finalReply = `Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 3998}. Advance edhum thevaiyilla sir! Service mudinjadhum cash or UPI (GPay/PhonePe) moolam pay pannalaam.`;
+      } else if (/enna book|service|details|order|what service/i.test(lower)) {
+        finalReply = `Neenga book pannirukura service: *${activeBooking.serviceType || 'Custom Cleaning Plan'}* (Ref: *${activeBooking.ref}*). Scheduled slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM'}). Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*.`;
+      } else if (/time|slot|eppo|varuvaar|varuvaanga|arrival|when/i.test(lower)) {
+        finalReply = `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir!`;
+      } else {
+        finalReply = `Vanakkam! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType || 'Cleaning'}). Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10 AM'}). Edhavadhu assistance venuma sir?`;
+      }
     } else if (isEmergency) {
       finalReply = `Romba sorry for the inconvenience! 🙏 Ungal issue-ah note pannittaen. Operations team & specialist-ku urgent alert anuppittaen. Immediate helpline: ${SUPPORT_PHONE}`;
     } else {
