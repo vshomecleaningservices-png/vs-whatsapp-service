@@ -378,7 +378,7 @@ async function askGemini(prompt, systemInstruction, history = []) {
   for (const model of CANDIDATE_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 16000);
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
     try {
       const res = await fetch(url, {
@@ -494,75 +494,62 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     }
   }
 
-  // 4. Build Rich Context for Gemini 3.6 Flash
-  let bookingContext = "No active booking record found under this phone number yet.";
-  if (activeBooking) {
-    bookingContext = `ACTIVE BOOKING FOUND IN DATABASE:
-- Reference ID: ${activeBooking.ref}
-- Customer Name: ${activeBooking.customerName || activeBooking.name || session.name || 'Valued Customer'}
-- Service Booked: ${activeBooking.serviceType || 'Home Cleaning'}
-- Scheduled Date & Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM - 12:00 PM'})
-- Assigned Specialist: ${activeBooking.assignedPartnerName || 'Vignesh S'}
-- Specialist Phone: ${activeBooking.assignedPartnerMobile || '916383458190'}
-- Total Amount: ₹${activeBooking.total || 499} (Zero advance, pay after service)
-- Current Status: ${activeBooking.status || 'Team Assigned'}`;
+  // 4. INSTANT CONTEXTUAL HELPLINE REPLIES (Instant <10ms, Zero Waiting!)
+  if (isEmergency) {
+    const partnerName = activeBooking?.assignedPartnerName || 'Vignesh S';
+    const ref = activeBooking?.ref || 'Active Job';
+    return `Romba sorry for the delay / inconvenience! 🙏\n\nUnga booking (${ref}) specialist **${partnerName}**-ku ippove urgent WhatsApp alert send pannittaen. Avanga ungalukku call panra maathiri inform pannirukkom.\n\nFounder Vignesh-kum direct notification poirukku. Urgent help-ku call: ${SUPPORT_PHONE}`;
   }
 
-  const systemPrompt = `You are Saaral (சாரல்), the warm, highly articulate, polite female Customer Operations & Helpline Manager at VS Home Cleaning Services, Chennai.
-
-IDENTITY & CORE PERSONA:
-- You speak naturally like a real human operations executive in Chennai.
-- PRIMARY LANGUAGE: Natural, polished Chennai Tanglish (conversational Tamil blended with clear English words). E.g.: "Vanakkam!", "Kandippa!", "Kavalapadadheenga, naan ippove check panren", "Nandri!".
-- If the customer speaks pure Tamil, reply warmly in respectful Tamil.
-- If the customer speaks English, reply articulately in professional English.
-- Keep responses concise (2 to 4 short sentences maximum). Never recite robotic numbered menus unless specifically asked.
-
-LIVE BUSINESS INFORMATION:
-- Business: VS Home Cleaning Services, Chennai (Helpline: +91 75581 91073, Website: vshomecleaningservices.in)
-- Zero Advance: Customer pays ₹0 upfront. Payment only after cleaning is 100% completed and inspected.
-- Diversey Taski certified bio-safe, eco-friendly chemicals (safe for children, pets & tile glaze).
-- Standard Rates:
-  * Bathroom Deep Clean: ₹499 per bathroom
-  * Kitchen Deep Clean: ₹1,399
-  * Sofa Shampooing: ₹899 (3-seater), ₹1,399 (5-seater)
-  * Full Home Deep Cleaning: ₹2,499 (1BHK), ₹3,499 (2BHK)
-- Instant Booking Website: https://vshomecleaningservices.in/booking.html
-
-CURRENT CALLER CONTEXT:
-Caller Phone: +91 ${p10}
-Caller Name: ${session.name || 'Customer'}
-${bookingContext}
-${partnerAlertSent ? 'NOTICE: An urgent WhatsApp alert has ALREADY been sent to the assigned specialist and founder Vignesh regarding the delay/complaint reported.' : ''}
-
-INSTRUCTIONS FOR THIS TURN:
-- If caller asks about booking status or cleaner arrival: Share the actual Reference ID, scheduled date & slot, and assigned specialist name warmly. Reassure them that the specialist will arrive on time.
-- If caller reports a delay or issue: Show genuine human empathy ("Romba sorry for the delay!"). Reassure them that you have already sent a high-priority alert to specialist ${activeBooking?.assignedPartnerName || 'Vignesh S'} and they will contact them immediately.
-- If caller wants to place a new booking right now on WhatsApp: Politely ask for their Chennai delivery address with PIN code, and their preferred date & time slot. Mention they can also book directly on the website (vshomecleaningservices.in/booking.html).
-- Be caring, professional, confident, and 100% human.`;
-
-  // 5. Ask Gemini
-  const geminiReply = await askGemini(text, systemPrompt, session.history);
-
-  let finalReply = geminiReply;
-
-  // 6. Fallback in case of Gemini timeout/offline
-  if (!finalReply) {
-    if (activeBooking) {
-      if (/payment|amount|total|charge|evvalavu|panam|cost|fee/i.test(lower)) {
-        finalReply = `Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 3998}. Advance edhum thevaiyilla sir! Service mudinjadhum cash or UPI (GPay/PhonePe) moolam pay pannalaam.`;
-      } else if (/enna book|service|details|order|what service/i.test(lower)) {
-        finalReply = `Neenga book pannirukura service: *${activeBooking.serviceType || 'Custom Cleaning Plan'}* (Ref: *${activeBooking.ref}*). Scheduled slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM'}). Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*.`;
-      } else if (/time|slot|eppo|varuvaar|varuvaanga|arrival|when/i.test(lower)) {
-        finalReply = `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir!`;
-      } else {
-        finalReply = `Vanakkam! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType || 'Cleaning'}). Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10 AM'}). Edhavadhu assistance venuma sir?`;
-      }
-    } else if (isEmergency) {
-      finalReply = `Romba sorry for the inconvenience! 🙏 Ungal issue-ah note pannittaen. Operations team & specialist-ku urgent alert anuppittaen. Immediate helpline: ${SUPPORT_PHONE}`;
-    } else {
-      finalReply = `Vanakkam! VS Home Cleaning Services Helpline. Naan Saaral pesuren. Ungal booking status check panna, pudhu service book panna, illa edhavadhu query irundha sollunga, naan help panren! 😊`;
+  if (activeBooking) {
+    if (/payment|amount|total|charge|evvalavu|panam|cost|fee|bill|pay/i.test(lower)) {
+      return `Vanakkam Vignesh sir! Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 3998}. Advance edhum thevaiyilla sir! Service mudinjadhum cash or UPI (GPay/PhonePe) moolam pay pannalaam.`;
+    }
+    if (/enna book|service|details|order|what service|kudu|solren/i.test(lower)) {
+      return `Neenga book pannirukura service: *${activeBooking.serviceType || 'Custom Cleaning Plan'}* (Ref: *${activeBooking.ref}*).\n\n📅 Scheduled Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM - 12:00 PM'})\n👤 Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*\n💰 Total: ₹${activeBooking.total || 3998} (Pay after service)`;
+    }
+    if (/time|slot|eppo|varuvaar|varuvaanga|arrival|when|neram/i.test(lower)) {
+      return `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir!`;
     }
   }
+
+  // General rate card
+  if (/price|cost|rate|rates|charges|vilai/i.test(lower) && !activeBooking) {
+    return `🧹 *VS Home Cleaning Services — Official Rates*\n\n` +
+      `• *Bathroom Deep Clean:* ₹499 per bathroom\n` +
+      `• *Kitchen Deep Clean:* ₹1,399\n` +
+      `• *Sofa Shampooing:* ₹899 (3-seater) | ₹1,399 (5-seater)\n` +
+      `• *Full Home Deep Clean:* ₹2,499 (1BHK) | ₹3,499 (2BHK)\n\n` +
+      `✨ *Zero Advance* — 100% pay after inspection!\n` +
+      `Book online: ${WEBSITE_URL}/booking.html`;
+  }
+
+  // Greetings
+  if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|help|saral)/i.test(lower)) {
+    if (activeBooking) {
+      return `Vanakkam ${session.name || 'sir'}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager. Unga active booking (Ref: *${activeBooking.ref}* - ${activeBooking.serviceType}) sambandhama edhavadhu help venuma, illai pudhu service book pannanuma?`;
+    }
+    return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Helpline Executive.\n\nUngalukku eppadi help pannattum?\n1. Booking status / cleaner arrival check panna\n2. Complaints / delays escalate panna\n3. New cleaning services book panna\n\nSollunga sir! 😊`;
+  }
+
+  // 5. Open-ended conversational query -> Gemini (with 4s timeout)
+  let bookingContext = "No active booking record found under this phone number yet.";
+  if (activeBooking) {
+    bookingContext = `ACTIVE BOOKING: Ref: ${activeBooking.ref}, Service: ${activeBooking.serviceType}, Specialist: ${activeBooking.assignedPartnerName}, Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}), Total: Rs ${activeBooking.total}.`;
+  }
+
+  const systemPrompt = `You are Saaral, female Operations Manager at VS Home Cleaning Services, Chennai (+91 75581 91073).
+Speak natural Chennai Tanglish (Tamil + English). Be warm, polite, and helpful (1-3 sentences). Zero advance policy.
+${bookingContext}`;
+
+  const geminiReply = await askGemini(text, systemPrompt, session.history);
+  if (geminiReply) return geminiReply;
+
+  // Ultimate safe fallback
+  if (activeBooking) {
+    return `Vanakkam! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType}). Specialist *${activeBooking.assignedPartnerName}* assign aagiyirukkaanga. Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}). Total: ₹${activeBooking.total}. Edhavadhu assistance venuma sir?`;
+  }
+  return `Vanakkam! VS Home Cleaning Services Helpline. Naan Saaral pesuren. Booking status check panna, pudhu service book panna sollunga, naan help panren! 😊`;
 
   // Update session history
   session.history.push({ role: 'user', text });
