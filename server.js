@@ -474,9 +474,96 @@ app.post('/api/send-confirmation', async (req, res) => {
       `📍 *Address:* ${address}\n\n` +
       `⚡ *Admin Dashboard:* https://vshomecleaningservices.in/admin.html`;
 
-    // Admin WhatsApp Alert disabled per founder preference (Only voice/SOS calls alert founder)
-    // await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
-    // logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
+    // ✅ Admin WhatsApp Alert - Enabled
+    await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
+    logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
+
+    // ✅ Auto-assign to partner: write to Firebase partnerJobs
+    try {
+      const FIREBASE_DB = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
+      // Find active partner
+      let partnerUid = 'partner-1';
+      let partnerName = 'Vignesh S';
+      let partnerPhone = '916383458190';
+      try {
+        const pRes = await fetch(`${FIREBASE_DB}/partners.json`);
+        const pData = await pRes.json();
+        if (pData && !pData.error && typeof pData === 'object') {
+          for (const k of Object.keys(pData)) {
+            if (pData[k] && (pData[k].accountStatus === 'active' || !pData[k].accountStatus)) {
+              partnerUid = k;
+              partnerName = pData[k].name || 'Vignesh S';
+              partnerPhone = pData[k].phone || pData[k].phoneNumber || '916383458190';
+              break;
+            }
+          }
+        }
+      } catch (e) {}
+
+      const jobPayload = {
+        bookingRef: ref,
+        serviceType: service || 'Home Cleaning',
+        category: 'cleaning',
+        customerName: name || 'Customer',
+        customerPhone: phone,
+        address: address || 'Chennai',
+        date: date,
+        time: time,
+        price: total || 499,
+        status: 'pending',
+        assignedTo: partnerUid,
+        assignedPartnerName: partnerName,
+        assignedPartnerMobile: partnerPhone,
+        createdAt: Date.now(),
+        bookedVia: 'Website'
+      };
+
+      await fetch(`${FIREBASE_DB}/partnerJobs/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(jobPayload)
+      });
+
+      // Also update bookingLookup with partner info
+      await fetch(`${FIREBASE_DB}/bookingLookup/${ref}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignedTo: partnerUid,
+          assignedPartnerName: partnerName,
+          assignedPartnerMobile: partnerPhone,
+          status: 'Team Assigned'
+        })
+      });
+      const p10 = String(phone).replace(/\D/g, '').slice(-10);
+      if (p10) {
+        await fetch(`${FIREBASE_DB}/bookingLookup/by_phone_${p10}.json`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            assignedPartnerName: partnerName,
+            status: 'Team Assigned'
+          })
+        });
+      }
+
+      // Send partner WhatsApp alert
+      const partMsg = `🔔 *NEW CLEANING JOB ASSIGNED* 🔔\n\n` +
+        `வணக்கம் ${partnerName}!\n` +
+        `Website-ல புதிய புக்கிங் வந்தது:\n\n` +
+        `📋 *Job Ref:* ${ref}\n` +
+        `👤 *Customer:* ${name}\n` +
+        `🛠️ *Service:* ${service}\n` +
+        `📅 *Date & Slot:* ${date} (${time})\n` +
+        `📍 *Address:* ${address}\n` +
+        `💰 *Amount:* ₹${total}\n\n` +
+        `⚡ Admin Dashboard: https://vshomecleaningservices.in/admin.html`;
+      await sendWhatsAppMessage(partnerPhone, partMsg);
+      logDispatch('Job Alert (Partner - Website)', partnerPhone, `Job: ${ref}`, 'Delivered');
+
+    } catch (assignErr) {
+      console.error('[Auto-Assign Notice]:', assignErr.message);
+    }
 
     res.json({ success: true, ref, customerPhone: phone, result: custResult });
   } catch (err) {
@@ -926,7 +1013,7 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
     }
 
     if (!booking) {
-      const notFoundReply = "மன்னிச்சுக்கோங்க, அந்த விவரத்துல ஆக்டிவ் புக்கிங் எதுவும் கிடைக்கலங்க. நீங்க வெப்சைட்ல புக் பண்ணியிருந்தா உங்க ஆர்டர் ரெஃபரன்ஸ் ஐடி அல்லது புக் பண்ணிய மொபைல் நம்பர் சொல்லுங்க!";
+      const notFoundReply = "Mannichukkaanga, antha vivaragathula active booking ethuvaum kidaikkala. Neengal websitela book pannirundhaal, ungal order reference ID athava book panniya mobile number sollunga!";
       const responsePayload = {
         found: false,
         query: rawInput,
@@ -950,9 +1037,9 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
 
     let spokenReply = '';
     if (partnerName) {
-      spokenReply = `உங்க ${serviceType} புக்கிங் உறுதியாகியுள்ளதுங்க! நேரம்: ${scheduledSlot}. உங்க கிளீனிங் ஸ்பெஷலிஸ்ட் ${partnerName} அசைன் ஆகியிருக்காங்க. அவங்க குறித்த நேரத்துக்கு வந்துடுவாங்க!`;
+      spokenReply = `Ungal ${serviceType} booking confirmed! Neram: ${scheduledSlot}. Ungal cleaning specialist ${partnerName} assign aagiyirukkaanga. Avanga kuritha nerathukku vandhuduvaaanga!`;
     } else {
-      spokenReply = `உங்க ${serviceType} புக்கிங் பதிவாகியுள்ளதுங்க! நேரம்: ${scheduledSlot}. கிளீனிங் ஸ்பெஷலிஸ்ட் இப்போ அசைன் ஆகிட்டு இருக்காங்க!`;
+      spokenReply = `Ungal ${serviceType} booking pathaivaagiyadhu! Neram: ${scheduledSlot}. Cleaning specialist ippo assign aagittiru kkaanga. Virainthu thegalarvaar!`;
     }
 
     // Trigger instant urgent WhatsApp alert to the assigned partner if caller is escalating
