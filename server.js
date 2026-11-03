@@ -951,12 +951,29 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
 
     rawInput = String(rawInput || '').trim();
 
+    // Decode spoken Tamil / phonetic number words if present
+    const tamilNumMap = {
+      'டபுள் ஜீரோ': '00', 'பூஜ்யம்': '0', 'ஜீரோ': '0', 'ஒன்று': '1', 'ஒன்': '1',
+      'இரண்டு': '2', 'டூ': '2', 'மூன்று': '3', 'த்ரீ': '3', 'நான்கு': '4', 'ஃபோர்': '4',
+      'ஐந்து': '5', 'ஃபைவ்': '5', 'ஆறு': '6', 'சிக்ஸ்': '6', 'ஏழு': '7', 'செவன்': '7',
+      'எவன்': '7', 'எட்டு': '8', 'எயிட்': '8', 'ஒன்பது': '9', 'நைன்': '9'
+    };
+    let parsedInput = rawInput;
+    for (const [w, d] of Object.entries(tamilNumMap)) {
+      parsedInput = parsedInput.split(w).join(d);
+    }
+
     let booking = null;
     let ref = null;
 
-    const clean = rawInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-    const digitsOnly = rawInput.replace(/\D/g, '');
-    const p10 = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : null;
+    const clean = parsedInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const digitsOnly = parsedInput.replace(/\D/g, '');
+    let p10 = null;
+    if (digitsOnly.length === 10) {
+      p10 = digitsOnly;
+    } else if (digitsOnly.length > 10) {
+      p10 = digitsOnly.slice(-10);
+    }
 
     // 1. If 10-digit phone number, check phone mirror
     if (p10 && !clean.startsWith('VS')) {
@@ -999,7 +1016,6 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
             if (p10 && bMobile === p10) return true;
             const bRefClean = String(b.ref || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
             if (clean && (bRefClean === clean || bRefClean.includes(clean) || clean.includes(bRefClean))) return true;
-            // Match 6 digit date pattern (e.g. 261102)
             const dateMatch = clean.match(/\d{6}/);
             if (dateMatch && bRefClean.includes(dateMatch[0])) return true;
             return false;
@@ -1012,8 +1028,23 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
       } catch (e) {}
     }
 
+    // 4. Critical Fallback: If still not found, check caller's own incoming phone number!
+    if (!booking && callerPhone) {
+      const c10 = callerPhone.replace(/\D/g, '').slice(-10);
+      if (c10 && c10 !== p10) {
+        try {
+          const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/by_phone_${c10}.json`);
+          const phoneData = await fbRes.json();
+          if (phoneData && !phoneData.error && phoneData.ref) {
+            booking = phoneData;
+            ref = booking.ref;
+          }
+        } catch (e) {}
+      }
+    }
+
     if (!booking) {
-      const notFoundReply = "Mannichukkaanga, antha vivaragathula active booking ethuvaum kidaikkala. Neengal websitela book pannirundhaal, ungal order reference ID athava book panniya mobile number sollunga!";
+      const notFoundReply = "மன்னிச்சுக்கோங்க, அந்த விவரத்துல ஆக்டிவ் புக்கிங் எதுவும் கிடைக்கலங்க. நீங்க வெப்சைட்ல புக் பண்ணியிருந்தா, உங்க ஆர்டர் ரெஃபரன்ஸ் ஐடி அல்லது புக் பண்ணிய மொபைல் நம்பர் சொல்லுங்க!";
       const responsePayload = {
         found: false,
         query: rawInput,
@@ -1035,11 +1066,15 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
     const scheduledSlot = `${booking.preferredDate || 'Upcoming'} at ${booking.preferredTime || 'scheduled time'}`;
     const status = booking.status || 'Team Assigned';
 
+    let cleanService = serviceType;
+    if (cleanService.includes('(')) cleanService = cleanService.split('(')[0].trim();
+    if (/^\d+\s*services/i.test(cleanService)) cleanService = 'ஹோம் டீப் கிளீனிங்';
+
     let spokenReply = '';
     if (partnerName) {
-      spokenReply = `Ungal ${serviceType} booking confirmed! Neram: ${scheduledSlot}. Ungal cleaning specialist ${partnerName} assign aagiyirukkaanga. Avanga kuritha nerathukku vandhuduvaaanga!`;
+      spokenReply = `வணக்கம்! உங்க புக்கிங் உறுதியாகியுள்ளது. சேவை: ${cleanService}. கிளீனிங் ஸ்பெஷலிஸ்ட் ${partnerName} ஒதுக்கப்பட்டிருக்காங்க. நேரம்: ${scheduledSlot}. மொத்த கட்டணம் ${booking.total || 499} ரூபாய். முன்பணம் தேவையில்லை, வேலை முடிஞ்ச பிறகு கொடுத்தா போதும்!`;
     } else {
-      spokenReply = `Ungal ${serviceType} booking pathaivaagiyadhu! Neram: ${scheduledSlot}. Cleaning specialist ippo assign aagittiru kkaanga. Virainthu thegalarvaar!`;
+      spokenReply = `வணக்கம்! உங்க புக்கிங் உறுதியாகியுள்ளது. சேவை: ${cleanService}. நேரம்: ${scheduledSlot}. கிளீனிங் ஸ்பெஷலிஸ்ட் விரைவில் ஒதுக்கப்பட்டு அழைக்கப்படுவார்!`;
     }
 
     // Trigger instant urgent WhatsApp alert to the assigned partner if caller is escalating
