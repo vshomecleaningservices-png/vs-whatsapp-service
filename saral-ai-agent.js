@@ -501,15 +501,56 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     return `Romba sorry for the delay / inconvenience! 🙏\n\nUnga booking (${ref}) specialist **${partnerName}**-ku ippove urgent WhatsApp alert send pannittaen. Avanga ungalukku call panra maathiri inform pannirukkom.\n\nFounder Vignesh-kum direct notification poirukku. Urgent help-ku call: ${SUPPORT_PHONE}`;
   }
 
+  // Polite acknowledgments / closers ("Okey", "Okey done", "Thanks", "Super", "Sari")
+  const isCloser = /^(ok|okey|okay|ok done|okey done|okay done|done|all done|sari|seri|super|thanks|thank you|thx|nandri|great|perfect|sure|bye|good night|tq)$/i.test(lower) ||
+    /^(ok|okey|okay|thanks|thank you|nandri|sari|super)\s*(pa|bro|sir|mam|saral|ji)?[.!]?$/i.test(lower);
+
+  if (isCloser) {
+    if (activeBooking) {
+      return `Nandri ${session.name || 'sir'}! 🙏 Unga specialist **${activeBooking.assignedPartnerName || 'Vignesh S'}** on-time-la vandhu super-ah clean panni tharuvaanga. Edhavadhu thevaippatta eppo vena inga message pannalaam or call 07971851000. Have a great day! 🌸✨`;
+    }
+    return `Nandri ${session.name || 'sir'}! 🙏 Edhavadhu services thevaippatta eppo vena inga message pannalaam. Have a wonderful day! 🌸✨`;
+  }
+
+  // Greetings
+  if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|help|saral)/i.test(lower) && !activeBooking) {
+    return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Helpline Executive.\n\nUngalukku eppadi help pannattum?\n1. Booking status / cleaner arrival check panna\n2. Complaints / delays escalate panna\n3. New cleaning services book panna\n\nSollunga sir! 😊`;
+  }
+
   if (activeBooking) {
-    if (/payment|amount|total|charge|evvalavu|panam|cost|fee|bill|pay/i.test(lower)) {
-      return `Vanakkam Vignesh sir! Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 3998}. Advance edhum thevaiyilla sir! Service mudinjadhum cash or UPI (GPay/PhonePe) moolam pay pannalaam.`;
+    // Greetings with active booking
+    if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|saral)/i.test(lower)) {
+      return `Vanakkam ${session.name || 'sir'}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager. Unga active booking (Ref: *${activeBooking.ref}* - ${activeBooking.serviceType}) paathen. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Edhavadhu details venuma sir?`;
     }
-    if (/enna book|service|details|order|what service|kudu|solren/i.test(lower)) {
-      return `Neenga book pannirukura service: *${activeBooking.serviceType || 'Custom Cleaning Plan'}* (Ref: *${activeBooking.ref}*).\n\n📅 Scheduled Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM - 12:00 PM'})\n👤 Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*\n💰 Total: ₹${activeBooking.total || 3998} (Pay after service)`;
+
+    // Payment queries
+    if (/payment|amount|total|charge|evvalavu|panam|cost|fee|bill|pay|kudukanum|evlo/i.test(lower)) {
+      return `Vanakkam ${session.name || 'sir'}! Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 499}. Advance edhum thevaiyilla sir! Service mudinjadhum clean-ah check pannittu cash or UPI (GPay/PhonePe) moolam pay pannalaam. 💰`;
     }
-    if (/time|slot|eppo|varuvaar|varuvaanga|arrival|when|neram/i.test(lower)) {
-      return `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir!`;
+
+    // Service queries
+    if (/enna service|service details|enna book|order|what service|service|package/i.test(lower)) {
+      return `Neenga book pannirukura service: *${activeBooking.serviceType || 'Home Deep Cleaning'}* (Ref: *${activeBooking.ref}*).\n\n📅 Scheduled Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM - 12:00 PM'})\n👤 Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*\n💰 Total: ₹${activeBooking.total || 499} (Pay after service)`;
+    }
+
+    // Time / Arrival queries
+    if (/time|slot|eppo|eppa|varuvaar|varuvaanga|arrival|when|neram/i.test(lower)) {
+      return `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir! ⏱️`;
+    }
+
+    // Specialist / Cleaner queries
+    if (/specialist|cleaner|partner|who is|yaaru|yaar/i.test(lower)) {
+      return `Unga cleaning specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}* (Contact: ${activeBooking.assignedPartnerMobile || '916383458190'}). Specialist arrival-ku munnaadi ungalukku call pannuvaanga sir! 🤝`;
+    }
+
+    // Helpline / Call queries
+    if (/call|helpline|pesanum|contact|phone number|number kudu/i.test(lower)) {
+      return `Kandippa ${session.name || 'sir'}! Enga 24/7 Voice Helpline: *07971851000*. Ungalukku edhavadhu sandhegam irundhaa direct-ah call pannalaam, naan (Saaral) or operations team udane attend panrom! 📞`;
+    }
+
+    // Cancel queries
+    if (/cancel/i.test(lower)) {
+      return `Unga booking (Ref: *${activeBooking.ref}*) cancel panna virumbureengala sir? Zero cancellation charges! Cancel confirm panna 'CONFIRM CANCEL' nu anupunga, illai helpline 07971851000-ku call pannalaam.`;
     }
   }
 
@@ -522,14 +563,6 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       `• *Full Home Deep Clean:* ₹2,499 (1BHK) | ₹3,499 (2BHK)\n\n` +
       `✨ *Zero Advance* — 100% pay after inspection!\n` +
       `Book online: ${WEBSITE_URL}/booking.html`;
-  }
-
-  // Greetings
-  if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|help|saral)/i.test(lower)) {
-    if (activeBooking) {
-      return `Vanakkam ${session.name || 'sir'}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager. Unga active booking (Ref: *${activeBooking.ref}* - ${activeBooking.serviceType}) sambandhama edhavadhu help venuma, illai pudhu service book pannanuma?`;
-    }
-    return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Helpline Executive.\n\nUngalukku eppadi help pannattum?\n1. Booking status / cleaner arrival check panna\n2. Complaints / delays escalate panna\n3. New cleaning services book panna\n\nSollunga sir! 😊`;
   }
 
   // 5. Open-ended conversational query -> Gemini (with 4s timeout)
@@ -545,9 +578,12 @@ ${bookingContext}`;
   const geminiReply = await askGemini(text, systemPrompt, session.history);
   if (geminiReply) return geminiReply;
 
-  // Ultimate safe fallback
+  // Ultimate safe fallback (Natural & Non-robotic)
   if (activeBooking) {
-    return `Vanakkam! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType}). Specialist *${activeBooking.assignedPartnerName}* assign aagiyirukkaanga. Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}). Total: ₹${activeBooking.total}. Edhavadhu assistance venuma sir?`;
+    if (lower.length <= 15) {
+      return `Kandippa ${session.name || 'sir'}! Unga booking Ref: *${activeBooking.ref}* active-la irukku. Edhavadhu sandhegam irundhaa sollunga, naan help panren! 😊`;
+    }
+    return `Vanakkam ${session.name || 'sir'}! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType}). Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga. Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}). Total: ₹${activeBooking.total}. Edhavadhu thevaippatta sollunga sir!`;
   }
   return `Vanakkam! VS Home Cleaning Services Helpline. Naan Saaral pesuren. Booking status check panna, pudhu service book panna sollunga, naan help panren! 😊`;
 
