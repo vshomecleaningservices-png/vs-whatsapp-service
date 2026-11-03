@@ -1175,75 +1175,117 @@ app.post('/api/partner-status-update', async (req, res) => {
 // -------------------------------------------------------------
 // 2C. API: ESCALATE PARTNER DELAY (VOICE HELPLINE -> PARTNER & OPS ALERT)
 // -------------------------------------------------------------
-app.post('/api/escalate-partner-delay', async (req, res) => {
+app.all('/api/escalate-partner-delay', async (req, res) => {
   try {
-    const rawCaller = req.body?.customerPhone || req.body?.phone || req.body?.caller || '';
-    const reason = req.body?.reason || 'Customer called regarding cleaner delay';
+    let toolCallId = null;
+    let reason = req.body?.reason || req.query?.reason || 'Customer called regarding cleaner delay';
+    let rawCaller = req.body?.customerPhone || req.body?.phone || req.body?.caller || req.query?.customerPhone || req.query?.phone || '';
+
+    // Check Vapi toolCalls webhook format
+    const toolCall = req.body?.message?.toolCalls?.[0] || req.body?.toolCall;
+    if (toolCall) {
+      toolCallId = toolCall.id;
+      let args = toolCall.function?.arguments;
+      if (typeof args === 'string') {
+        try { args = JSON.parse(args); } catch (e) {}
+      }
+      if (args?.reason) reason = args.reason;
+      if (args?.customerPhone) rawCaller = args.customerPhone;
+    }
+
+    if (!rawCaller) {
+      rawCaller = req.body?.message?.call?.customer?.number ||
+                  req.body?.message?.customer?.number ||
+                  req.body?.call?.customer?.number || '';
+    }
+
     const digitsOnly = String(rawCaller).replace(/\D/g, '');
-    const p10 = digitsOnly.slice(-10);
+    const p10 = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
     console.log(`[Escalate Delay Triggered] Caller: ${p10}, Reason: ${reason}`);
 
-    // 1. Fetch active booking from Firebase
-    const fbRes = await fetch('https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookings.json');
-    const allBookings = await fbRes.json() || {};
-    
+    // 1. Fetch active booking from bookingLookup (public read)
     let matchedBooking = null;
     let matchedRef = null;
 
-    for (const [refKey, b] of Object.entries(allBookings)) {
-      if (!b) continue;
-      const bMobile = String(b.mobile || b.customerMobile || '').replace(/\D/g, '').slice(-10);
-      if (bMobile === p10) {
-        matchedBooking = b;
-        matchedRef = refKey;
-        break;
-      }
+    if (p10) {
+      try {
+        const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/by_phone_${p10}.json`);
+        const pData = await fbRes.json();
+        if (pData && !pData.error && pData.ref) {
+          matchedBooking = pData;
+          matchedRef = pData.ref;
+        }
+      } catch (e) {}
     }
 
     if (!matchedBooking) {
-      return res.json({
-        success: true,
-        actionTaken: 'Logged generic enquiry',
-        customerSpokenReply: 'மன்னிச்சுக்கோங்க, உங்க நம்பர்ல ஆக்டிவ் புக்கிங் எதுவும் காட்டலங்க. எங்க சீனியர் மேனேஜர் 10 நிமிஷத்துல உங்களுக்கு நேரடியா கால் பண்ணுவாங்க!'
-      });
+      try {
+        const rRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/recent_bookings.json`);
+        const recent = await rRes.json();
+        if (recent && typeof recent === 'object') {
+          for (const [rk, b] of Object.entries(recent)) {
+            if (!b) continue;
+            const bMob = String(b.customerMobile || b.mobile || '').replace(/\D/g, '').slice(-10);
+            if (p10 && bMob === p10) {
+              matchedBooking = b;
+              matchedRef = b.ref || rk;
+              break;
+            }
+          }
+        }
+      } catch (e) {}
     }
 
-    const partnerName = matchedBooking.assignedPartnerName || matchedBooking.assignedName || 'Assigned Specialist';
-    const partnerPhone = matchedBooking.assignedPartnerMobile || matchedBooking.assignedMobile || null;
-    const serviceType = matchedBooking.serviceType || 'Home Cleaning';
-    const cName = matchedBooking.name || 'Customer';
+    const partnerName = matchedBooking?.assignedPartnerName || matchedBooking?.assignedName || 'Vignesh S';
+    const partnerPhone = matchedBooking?.assignedPartnerMobile || matchedBooking?.assignedMobile || CONFIG.ADMIN_PHONE;
+    const serviceType = matchedBooking?.serviceType || 'Home Cleaning';
+    const cName = matchedBooking?.customerName || matchedBooking?.name || 'Customer';
+    const bRef = matchedRef || 'Active Booking';
 
     // 2. Alert the assigned Partner immediately via WhatsApp
     if (partnerPhone && typeof sendWhatsAppMessage === 'function') {
       const pClean = normalizePhone(partnerPhone);
       const partnerUrgentAlert = `🚨 *URGENT CUSTOMER HELPLINE ALERT* 🚨\n\n` +
         `வணக்கம் *${partnerName}*!\n` +
-        `வாடிக்கையாளர் *${cName}* (${matchedRef}) இப்போது ஹெல்ப்லைனில் அழைத்து தாமதம் குறித்து கேட்டுள்ளார்!\n\n` +
-        `📍 *முகவரி:* ${matchedBooking.address}\n` +
+        `வாடிக்கையாளர் *${cName}* (+91 ${p10}) இப்போது ஹெல்ப்லைனில் தொடர்பு கொண்டுள்ளார்!\n\n` +
+        `📋 *Ref:* ${bRef}\n` +
         `🧹 *சர்வீஸ்:* ${serviceType}\n` +
         `⚠️ *விபரம்:* ${reason}\n\n` +
-        `உடனடியாக வாடிக்கையாளருக்கு அழைத்து நிலவரத்தைத் தெரிவிக்கவும் அல்லது Partner App-ல் 'On the way' அப்டேட் செய்யவும்! ⚡`;
+        `உடனடியாக வாடிக்கையாளரைத் தொடர்புகொண்டு நிலைமையைத் தெரிவிக்கவும்! ⚡`;
 
       await sendWhatsAppMessage(pClean, partnerUrgentAlert).catch(e => console.error('[Partner Alert Error]:', e.message));
+      logDispatch('Voice Helpline Delay Alert', pClean, `Ref: ${bRef}`, 'Delivered');
     }
 
-    // 3. Trigger Founder / Operations Manager SOS
-    if (typeof triggerFounderSosCall === 'function') {
-      await triggerFounderSosCall({
-        incidentKey: `delay_${matchedRef}_${Date.now()}`,
-        ref: matchedRef,
-        reason: `Cleaner delay escalation: ${reason}`,
-        details: `Partner ${partnerName} (${partnerPhone || 'No Phone'}) assigned to ${cName} (${p10})`
-      }).catch(e => console.error('[Founder SOS Error]:', e.message));
+    // 3. Alert Founder / Operations Manager (Vignesh)
+    if (typeof sendWhatsAppMessage === 'function' && CONFIG.ADMIN_PHONE) {
+      const adminUrgentAlert = `🚨 *HELPLINE ESCALATION* 🚨\n\n` +
+        `வாடிக்கையாளர் (+91 ${p10}) அழைத்துள்ளார்.\n` +
+        `Ref: ${bRef} (${serviceType})\n` +
+        `Specialist: ${partnerName}\n` +
+        `காரணம்: ${reason}\n\n` +
+        `சாரல் உடனடியாக Specialist-க்கு அவசர WhatsApp alert அனுப்பியுள்ளார்!`;
+      await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminUrgentAlert).catch(() => {});
     }
 
-    return res.json({
+    const spokenReply = `Kavalapadadheenga! Ungal specialist ${partnerName}-kku ippove urgent alert anuppirukkom. Avanga udaney ungalai contact pannuvaanga!`;
+
+    const resultPayload = {
       success: true,
-      ref: matchedRef,
+      ref: bRef,
       partnerName,
-      customerSpokenReply: `நான் இப்போதே உங்க ஸ்பெஷலிஸ்ட் ${partnerName}-க்கு ஹை-பிரையாரிட்டி அலெர்ட் அனுப்பியிருக்கேங்க! அவங்க உடனே உங்களை தொடர்பு கொண்டு நேர்ல வந்துடுவாங்க. கவலைப்படாதீங்க!`
-    });
+      customerSpokenReply: spokenReply
+    };
+
+    if (toolCallId) {
+      return res.json({
+        ...resultPayload,
+        results: [{ toolCallId, result: JSON.stringify(resultPayload) }]
+      });
+    }
+
+    return res.json(resultPayload);
   } catch (err) {
     console.error('[escalate-partner-delay error]:', err.message);
     res.status(500).json({ success: false, error: err.message });
