@@ -70,20 +70,70 @@ function generateRef() {
   return `VS-${yy}${mm}${dd}-${rand}`;
 }
 
-async function getActivePartner() {
+async function findAvailablePartner(reqDate, reqTime, pincode) {
+  let partners = {};
   try {
-    const r = await fetch(`${FIREBASE_DB_URL}/partners.json`);
+    const r = await fetch(`${FIREBASE_DB_URL}/bookingLookup/partners.json`);
     const d = await r.json();
-    if (d && !d.error && typeof d === 'object') {
-      for (const k of Object.keys(d)) {
-        const p = d[k];
-        if (p && (p.accountStatus === 'active' || !p.accountStatus)) {
-          return { uid: k, name: p.name || 'Vignesh S', phone: p.phone || p.phoneNumber || '916383458190' };
-        }
+    if (d && !d.error && typeof d === 'object') partners = d;
+  } catch (e) {}
+
+  if (Object.keys(partners).length === 0) {
+    partners['partner-1'] = {
+      uid: 'partner-1',
+      name: 'Vignesh S',
+      phone: '916383458190',
+      accountStatus: 'active',
+      coveredAreas: ['all']
+    };
+  }
+
+  const activeList = Object.entries(partners).filter(([k, p]) => {
+    if (!p) return false;
+    const isActive = p.accountStatus === 'active' || !p.accountStatus;
+    if (!isActive) return false;
+    if (pincode && p.coveredAreas && !p.coveredAreas.includes('all')) {
+      if (!p.coveredAreas.includes(pincode)) return false;
+    }
+    return true;
+  });
+
+  if (activeList.length === 0) {
+    return { available: false, reason: 'no_active_partner' };
+  }
+
+  let recentBookings = {};
+  try {
+    const r = await fetch(`${FIREBASE_DB_URL}/bookingLookup/recent_bookings.json`);
+    const d = await r.json();
+    if (d && !d.error && typeof d === 'object') recentBookings = d;
+  } catch (e) {}
+
+  for (const [uid, p] of activeList) {
+    let isBusy = false;
+    for (const b of Object.values(recentBookings)) {
+      if (!b || b.status === 'cancelled') continue;
+      const isSamePartner = b.assignedTo === uid || String(b.assignedPartnerMobile || '').includes('6383458190');
+      const isSameDate = String(b.preferredDate || '').trim().toLowerCase() === String(reqDate || '').trim().toLowerCase();
+      const isSameTime = String(b.preferredTime || '').trim().toLowerCase() === String(reqTime || '').trim().toLowerCase();
+      if (isSamePartner && isSameDate && isSameTime) {
+        isBusy = true;
+        break;
       }
     }
-  } catch (e) {}
-  return { uid: 'partner-1', name: 'Vignesh S', phone: '916383458190' };
+    if (!isBusy) {
+      return {
+        available: true,
+        partner: {
+          uid,
+          name: p.name || 'Vignesh S',
+          phone: p.phone || p.phoneNumber || '916383458190'
+        }
+      };
+    }
+  }
+
+  return { available: false, reason: 'slot_fully_booked' };
 }
 
 async function lookupBooking(queryOrPhone) {
@@ -147,7 +197,73 @@ async function saveBookingToFirebase(session, notifier) {
                       (session.services.map(s => s.name).join(' + ')) ||
                       'Home Deep Cleaning';
 
-  const partner = await getActivePartner();
+  const reqDate = session.date || 'Tomorrow';
+  const reqTime = session.time || '10:00 AM - 12:00 PM';
+  const pincode = session.pincode || extractPincode(session.address || '');
+
+  const partnerCheck = await findAvailablePartner(reqDate, reqTime, pincode);
+
+  if (!partnerCheck.available) {
+    const enquiryRecord = {
+      ref,
+      name: session.name || 'WhatsApp Customer',
+      mobile,
+      serviceType: serviceName,
+      address: session.address ? `${session.address} (PIN: ${pincode || '600001'})` : 'Chennai',
+      pincode: pincode || '600001',
+      preferredDate: reqDate,
+      preferredTime: reqTime,
+      total,
+      status: 'pending_manual_dispatch',
+      reason: partnerCheck.reason,
+      createdAt: Date.now()
+    };
+
+    await Promise.allSettled([
+      fetch(`${FIREBASE_DB_URL}/bookingLookup/pending_enquiries/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(enquiryRecord)
+      }),
+      fetch(`${FIREBASE_DB_URL}/bookingLookup/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(enquiryRecord)
+      })
+    ]);
+
+    if (notifier) {
+      const urgentAlert = `🚨 *NO SPECIALIST AVAILABLE ALERT* 🚨\n\n` +
+        `👤 *வாடிக்கையாளர்:* ${enquiryRecord.name} (+91 ${mobile})\n` +
+        `📅 *கேட்ட நேரம்:* ${reqDate} (${reqTime})\n` +
+        `📍 *பகுதி / Pincode:* ${enquiryRecord.address}\n` +
+        `🛠️ *சேவை:* ${serviceName}\n` +
+        `💰 *தொகை:* ₹${total}\n` +
+        `📋 *Ref:* ${ref}\n\n` +
+        `⚠️ *காரணம்:* அந்த நேரத்தில் அனைத்து ஸ்பெஷலிஸ்ட்டுகளும் பிஸியாக உள்ளார்கள் / கிடைக்கவில்லை.\n` +
+        `தயவுசெய்து உடனடியாக வாடிக்கையாளரைத் தொடர்புகொண்டு மேனுவலாக நேரத்தை ஒதுக்கவும்! ⚡`;
+
+      await Promise.allSettled([
+        notifier('916383458190', urgentAlert),
+        notifier(FOUNDER_PHONE, urgentAlert)
+      ]);
+    }
+
+    session.stage = 'completed';
+    session.cart = null;
+    session.services = [];
+    session.address = null;
+
+    return {
+      available: false,
+      ref,
+      date: reqDate,
+      time: reqTime,
+      total
+    };
+  }
+
+  const partner = partnerCheck.partner;
 
   const bookingRecord = {
     ref,
@@ -156,8 +272,8 @@ async function saveBookingToFirebase(session, notifier) {
     serviceType: serviceName,
     address: session.address ? `${session.address} (PIN: ${session.pincode || '600001'})` : 'Chennai',
     pincode: session.pincode || '600001',
-    preferredDate: session.date || 'Tomorrow',
-    preferredTime: session.time || '10:00 AM - 12:00 PM',
+    preferredDate: reqDate,
+    preferredTime: reqTime,
     status: 'Team Assigned',
     paymentType: 'COD',
     paymentMethod: 'Cash on Service / Online UPI',
@@ -457,6 +573,10 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       if (!session.time) session.time = '10:00 AM - 12:00 PM';
 
       const booked = await saveBookingToFirebase(session, notifier);
+
+      if (booked && booked.available === false) {
+        return `வணக்கம் ${session.name || 'sir'}! 🙏 நீங்கள் கேட்ட நேரத்தில் (${booked.date} ${booked.time}) உங்கள் பகுதியில் உள்ள எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட்டுகள் அனைவரும் தற்போது முன்பதிவு செய்யப்பட்டுள்ளார்கள் (No Specialist Available).\n\nஉங்கள் என்கொயரி வெற்றிகரமாக பதிவு செய்யப்பட்டுள்ளது (Ref: *${booked.ref}*).\nஎங்கள் சீனியர் ஆபரேஷன்ஸ் மேலாளர் அடுத்த 15 நிமிடங்களில் உங்களை நேரடியாக அழைத்து, உங்களுக்கான மாற்று நேரத்தை உடனடியாக ஏற்பாடு செய்வார்! நன்றி. 🧹✨`;
+      }
 
       return `🎉 *உங்கள் புக்கிங் வெற்றிகரமாக உறுதியானது!* (Ref: *${booked.ref}*)\n\n` +
         `உங்களுக்காக எங்கள் தொழில்முறை கிளீனிங் ஸ்பெஷலிஸ்ட் **${booked.partnerName}** ஒதுக்கப்பட்டுவிட்டார்.\n\n` +
