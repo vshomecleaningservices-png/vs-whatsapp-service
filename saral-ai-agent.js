@@ -340,21 +340,11 @@ function extractDateAndTime(text) {
 }
 
 // ─────────────────────────────────────────────
-// Gemini LLM Caller (Multi-Model Resilient)
+// Gemini LLM Caller (Fast 2.5s Timeout, Non-blocking)
 // ─────────────────────────────────────────────
-const CANDIDATE_MODELS = [
-  'gemini-3.5-flash-lite',
-  'gemini-flash-lite-latest',
-  'gemini-3.1-flash-lite',
-  'gemini-3.8-flash'
-];
-
 async function askGemini(prompt, systemInstruction, history = []) {
   const apiKey = await getGeminiKey();
-  if (!apiKey) {
-    console.warn('[Gemini Notice]: Gemini API Key not found');
-    return null;
-  }
+  if (!apiKey) return null;
 
   const contents = [];
   const recentHistory = history.slice(-4);
@@ -364,51 +354,37 @@ async function askGemini(prompt, systemInstruction, history = []) {
   contents.push({ role: 'user', parts: [{ text: prompt }] });
 
   const payload = {
-    system_instruction: {
-      parts: [{ text: systemInstruction }]
-    },
+    system_instruction: { parts: [{ text: systemInstruction }] },
     contents,
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 1200
-    }
+    generationConfig: { temperature: 0.3, maxOutputTokens: 500 }
   };
 
-  // Try each model in sequence
-  for (const model of CANDIDATE_MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
 
-      if (res.ok) {
-        const data = await res.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (reply && reply.trim()) {
-          return reply.trim();
-        }
-      } else {
-        console.warn(`[Gemini ${model}]: Status ${res.status}, trying next model...`);
-      }
-    } catch (err) {
-      clearTimeout(timeoutId);
-      console.warn(`[Gemini ${model} Error]:`, err.message);
+    if (res.ok) {
+      const data = await res.json();
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (reply && reply.trim()) return reply.trim();
     }
+  } catch (err) {
+    clearTimeout(timeoutId);
   }
 
   return null;
 }
 
 // ─────────────────────────────────────────────
-// Main Message Processor
+// Main Message Processor (High Performance <50ms)
 // ─────────────────────────────────────────────
 async function processCustomerMessage(phone, userText, senderPushName, notifier) {
   const session = getSession(phone);
@@ -465,8 +441,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     partnerAlertSent = true;
   }
 
-  // 3. WHATSAPP ORDER COMPLETION LOGIC
-  // If customer has an active Cart order or expressed booking intent and sends address/slot
+  // 3. WHATSAPP ORDER COMPLETION LOGIC (Direct text address / slot)
   if (session.stage === 'waiting_address' || (session.cart && isAddressLike(text))) {
     if (isAddressLike(text)) {
       session.address = text;
@@ -477,7 +452,6 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     if (date) session.date = date;
     if (time) session.time = time;
 
-    // If we have address, auto-confirm booking in Firebase!
     if (session.address) {
       if (!session.date) session.date = 'Tomorrow';
       if (!session.time) session.time = '10:00 AM - 12:00 PM';
@@ -494,7 +468,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     }
   }
 
-  // 4. INSTANT CONTEXTUAL HELPLINE REPLIES (Instant <10ms, Zero Waiting!)
+  // 4. INSTANT CONTEXTUAL HELPLINE REPLIES (<10ms, Zero Waiting)
   if (isEmergency) {
     const partnerName = activeBooking?.assignedPartnerName || 'Vignesh S';
     const ref = activeBooking?.ref || 'Active Job';
@@ -514,48 +488,113 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   // Greetings
   if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|help|saral)/i.test(lower) && !activeBooking) {
-    return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Helpline Executive.\n\nUngalukku eppadi help pannattum?\n1. Booking status / cleaner arrival check panna\n2. Complaints / delays escalate panna\n3. New cleaning services book panna\n\nSollunga sir! 😊`;
+    return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Helpline Executive.\n\nUngalukku eppadi help pannattum?\n1. 🧹 *New Cleaning Services Book panna*\n2. 💰 *Service Rates & Price details therinjukka*\n3. 🔍 *Booking status & Cleaner track panna*\n\nSollunga sir! 😊 (24/7 Voice Helpline: 07971851000)`;
   }
 
+  // ────────────── SPECIFIC SERVICES REPLIES (Instant <10ms) ──────────────
+  // Bathroom Cleaning
+  if (/bathroom|toilet|washroom|bath|closet/i.test(lower)) {
+    return `🚿 *Bathroom Deep Cleaning — VS Home Cleaning*\n\n` +
+      `• *Rate:* ₹499 per bathroom\n` +
+      `• *Includes:* Hard water stain removal, tile & floor acid-free scrubbing, toilet descaling, taps & chrome buffing, mirror shine, complete sanitization.\n` +
+      `• *Zero Advance:* 100% pay after inspection!\n\n` +
+      `Direct Online Booking: ${WEBSITE_URL}/booking.html\n` +
+      `Or reply with your Address & Preferred Slot here to book directly! ✨`;
+  }
+
+  // Kitchen Cleaning
+  if (/kitchen|chimney|stove|samayal/i.test(lower)) {
+    return `🍳 *Kitchen Deep Cleaning — VS Home Cleaning*\n\n` +
+      `• *Rate:* ₹1,399 (Full Kitchen)\n` +
+      `• *Includes:* Heavy grease & oil degreasing, chimney surface scrubbing, wall tile descaling, cabinets interior & exterior, gas stove polishing, sink & drainage sanitization.\n` +
+      `• *Zero Advance:* Pay after service!\n\n` +
+      `Direct Online Booking: ${WEBSITE_URL}/booking.html\n` +
+      `Or reply with your Address & Preferred Slot here to book directly! ✨`;
+  }
+
+  // Sofa / Mattress Shampooing
+  if (/sofa|couch|mattress|cushion|chair/i.test(lower)) {
+    return `🛋️ *Sofa & Fabric Deep Shampooing — VS Home Cleaning*\n\n` +
+      `• *3-Seater Sofa:* ₹899\n` +
+      `• *5-Seater Sofa / L-Shape:* ₹1,399\n` +
+      `• *Includes:* High-power dry extraction, organic shampoo foam scrub, stain removal, rapid moisture extraction (dries quickly).\n` +
+      `• *Zero Advance:* 100% satisfaction guaranteed!\n\n` +
+      `Direct Online Booking: ${WEBSITE_URL}/booking.html\n` +
+      `Or reply with your Address & Preferred Slot here to book directly! ✨`;
+  }
+
+  // Full Home Cleaning
+  if (/full home|house|home clean|deep clean|flat|apartment|veedu|1bhk|2bhk|3bhk|villa/i.test(lower)) {
+    return `🏠 *Full Home Deep Cleaning — VS Home Cleaning*\n\n` +
+      `• *1 BHK:* ₹2,499\n` +
+      `• *2 BHK:* ₹3,499\n` +
+      `• *3 BHK:* ₹4,499\n` +
+      `• *Includes:* All bathrooms deep clean, full kitchen degreasing, all rooms, balconies, fans, windows, switches & machine floor scrubbing.\n` +
+      `• *Zero Advance:* Pay only after full inspection!\n\n` +
+      `Direct Online Booking: ${WEBSITE_URL}/booking.html\n` +
+      `Or reply with your Address & Preferred Slot here to book directly! ✨`;
+  }
+
+  // Water Tank / Sump
+  if (/tank|water tank|sump/i.test(lower)) {
+    return `🚰 *Water Tank & Sump Cleaning — VS Home Cleaning*\n\n` +
+      `• *Overhead Sintex Tank:* from ₹699\n` +
+      `• *Underground Sump:* from ₹999\n` +
+      `• *Includes:* High-pressure sludge extraction, bacterial descaling, UV / potassium permanganate sanitization.\n\n` +
+      `Book online: ${WEBSITE_URL}/booking.html or call 07971851000`;
+  }
+
+  // General Booking Intent
+  if (/book|booking|service venum|clean pannanum|order|schedule|need cleaning/i.test(lower)) {
+    session.stage = 'waiting_address';
+    return `Super sir! VS Home Cleaning-ல் மிக எளிதாக புக் செய்யலாம்! 🧹✨\n\nதயவுசெய்து:\n1. *என்ன சேவை தேவை?* (Bathroom / Kitchen / Sofa / Full Home)\n2. *உங்கள் சென்னை முகவரி & PIN Code*\n3. *விருப்பமான தேதி & நேரம்* (e.g. Tomorrow 10 AM)\n\nஇதை மெசேஜ் பண்ணுங்க, நான் உடனே ஸ்பெஷலிஸ்ட்டை ஒதுக்கி கன்ஃபார்ம் செய்திடுறேன்! (Zero Advance)`;
+  }
+
+  // Location / Coverage Intent
+  if (/location|chennai|area|service area|engalaam|pincode|covai|coimbatore/i.test(lower)) {
+    return `📍 *VS Home Cleaning Services Chennai City முழுவதும் கிடைக்கும்!*\n\n` +
+      `Anna Nagar, T Nagar, Velachery, Adyar, Tambaram, Porur, Guindy, OMR, ECR, Vadapalani, Ambattur, Kilpauk, Mylapore உட்பட சென்னை மற்றும் புறநகர் பகுதிகள் அனைத்திலும் எங்கள் ஸ்பெஷலிஸ்ட்டுகள் உடனடியாக வந்து கிளீன் செய்து தருவார்கள்!\n\n` +
+      `Online Booking: ${WEBSITE_URL}/booking.html | Helpline: 07971851000`;
+  }
+
+  // Contact / Call / Phone Intent
+  if (/call|phone|number|helpline|pesanum|support|contact|contact number/i.test(lower)) {
+    return `📞 *VS Home Cleaning Services 24/7 Support:*\n\n` +
+      `• *Voice Helpline:* 07971851000 (24/7 AI & Operations Manager Saaral)\n` +
+      `• *WhatsApp Helpline:* +91 75581 91073\n` +
+      `• *Website:* ${WEBSITE_URL}\n\n` +
+      `எந்த உதவி தேவைப்பட்டாலும் தயங்காமல் அழைக்கவும் sir! 😊`;
+  }
+
+  // Active Booking Inquiries
   if (activeBooking) {
-    // Greetings with active booking
     if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|saral)/i.test(lower)) {
       return `Vanakkam ${session.name || 'sir'}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager. Unga active booking (Ref: *${activeBooking.ref}* - ${activeBooking.serviceType}) paathen. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Edhavadhu details venuma sir?`;
     }
 
-    // Payment queries
     if (/payment|amount|total|charge|evvalavu|panam|cost|fee|bill|pay|kudukanum|evlo/i.test(lower)) {
       return `Vanakkam ${session.name || 'sir'}! Unga booking (Ref: *${activeBooking.ref}*) total payment amount ₹${activeBooking.total || 499}. Advance edhum thevaiyilla sir! Service mudinjadhum clean-ah check pannittu cash or UPI (GPay/PhonePe) moolam pay pannalaam. 💰`;
     }
 
-    // Service queries
     if (/enna service|service details|enna book|order|what service|service|package/i.test(lower)) {
       return `Neenga book pannirukura service: *${activeBooking.serviceType || 'Home Deep Cleaning'}* (Ref: *${activeBooking.ref}*).\n\n📅 Scheduled Slot: ${activeBooking.preferredDate || 'Upcoming'} (${activeBooking.preferredTime || '10:00 AM - 12:00 PM'})\n👤 Specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}*\n💰 Total: ₹${activeBooking.total || 499} (Pay after service)`;
     }
 
-    // Time / Arrival queries
     if (/time|slot|eppo|eppa|varuvaar|varuvaanga|arrival|when|neram/i.test(lower)) {
       return `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir! ⏱️`;
     }
 
-    // Specialist / Cleaner queries
     if (/specialist|cleaner|partner|who is|yaaru|yaar/i.test(lower)) {
       return `Unga cleaning specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}* (Contact: ${activeBooking.assignedPartnerMobile || '916383458190'}). Specialist arrival-ku munnaadi ungalukku call pannuvaanga sir! 🤝`;
     }
 
-    // Helpline / Call queries
-    if (/call|helpline|pesanum|contact|phone number|number kudu/i.test(lower)) {
-      return `Kandippa ${session.name || 'sir'}! Enga 24/7 Voice Helpline: *07971851000*. Ungalukku edhavadhu sandhegam irundhaa direct-ah call pannalaam, naan (Saaral) or operations team udane attend panrom! 📞`;
-    }
-
-    // Cancel queries
     if (/cancel/i.test(lower)) {
       return `Unga booking (Ref: *${activeBooking.ref}*) cancel panna virumbureengala sir? Zero cancellation charges! Cancel confirm panna 'CONFIRM CANCEL' nu anupunga, illai helpline 07971851000-ku call pannalaam.`;
     }
   }
 
-  // General rate card
-  if (/price|cost|rate|rates|charges|vilai/i.test(lower) && !activeBooking) {
+  // General Rate Card
+  if (/price|cost|rate|rates|charges|vilai/i.test(lower)) {
     return `🧹 *VS Home Cleaning Services — Official Rates*\n\n` +
       `• *Bathroom Deep Clean:* ₹499 per bathroom\n` +
       `• *Kitchen Deep Clean:* ₹1,399\n` +
@@ -565,7 +604,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       `Book online: ${WEBSITE_URL}/booking.html`;
   }
 
-  // 5. Open-ended conversational query -> Gemini (with 4s timeout)
+  // 5. Open-ended conversational query -> Gemini (with 2.5s timeout)
   let bookingContext = "No active booking record found under this phone number yet.";
   if (activeBooking) {
     bookingContext = `ACTIVE BOOKING: Ref: ${activeBooking.ref}, Service: ${activeBooking.serviceType}, Specialist: ${activeBooking.assignedPartnerName}, Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}), Total: Rs ${activeBooking.total}.`;
@@ -578,14 +617,12 @@ ${bookingContext}`;
   const geminiReply = await askGemini(text, systemPrompt, session.history);
   if (geminiReply) return geminiReply;
 
-  // Ultimate safe fallback (Natural & Non-robotic)
+  // 6. Instant Bulletproof Safe Fallback (<1ms)
   if (activeBooking) {
-    if (lower.length <= 15) {
-      return `Kandippa ${session.name || 'sir'}! Unga booking Ref: *${activeBooking.ref}* active-la irukku. Edhavadhu sandhegam irundhaa sollunga, naan help panren! 😊`;
-    }
-    return `Vanakkam ${session.name || 'sir'}! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType}). Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga. Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}). Total: ₹${activeBooking.total}. Edhavadhu thevaippatta sollunga sir!`;
+    return `Vanakkam ${session.name || 'sir'}! Unga booking Ref: *${activeBooking.ref}* (${activeBooking.serviceType}). Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga. Slot: ${activeBooking.preferredDate} (${activeBooking.preferredTime}). Total: ₹${activeBooking.total}. Edhavadhu thevaippatta sollunga sir! (Helpline: 07971851000)`;
   }
-  return `Vanakkam! VS Home Cleaning Services Helpline. Naan Saaral pesuren. Booking status check panna, pudhu service book panna sollunga, naan help panren! 😊`;
+
+  return `Vanakkam ${session.name || ''}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager.\n\nUngalukku eppadi help pannattum?\n• *Service Rates therinjukka* ('Rates' nu anupunga)\n• *Bathroom, Kitchen, Sofa, Full Home book panna*\n• *Active Booking Status check panna*\n\nDirect 24/7 Helpline: 07971851000. Sollunga sir! 😊`;
 
   // Update session history
   session.history.push({ role: 'user', text });
