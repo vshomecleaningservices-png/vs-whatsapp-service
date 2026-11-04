@@ -403,6 +403,7 @@ async function saveBookingToFirebase(session, notifier) {
   session.address = null;
 
   return {
+    available: true,
     ref,
     partnerName: partner.name,
     total,
@@ -521,6 +522,105 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   // 1. Fetch live booking from Firebase
   const activeBooking = await lookupBooking(lookupQuery) || await lookupBooking(p10);
+
+  // ── SPECIAL WORKFLOW: PARTNER REPORTING UNREMOVABLE STAIN / ACID DAMAGE ──
+  const isStainReport = /stain|acid|damage|enamel|burn|karai|pogala/i.test(lower);
+  if (isStainReport && refInText && notifier) {
+    const targetRef = refInText[0].toUpperCase();
+    const targetBooking = await lookupBooking(targetRef);
+    if (targetBooking) {
+      await fetch(`${FIREBASE_DB_URL}/bookingLookup/${targetRef}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'inspection_stain_reported',
+          stainReportedAt: Date.now(),
+          stainNote: text
+        })
+      });
+
+      const cMobile = String(targetBooking.customerMobile || targetBooking.mobile || '').replace(/\D/g, '').slice(-10);
+      if (cMobile) {
+        const cTarget = '91' + cMobile;
+        const custStainMsg = `⚠️ *VS HOME CLEANING — INSPECTION REPORT* ⚠️\n\n` +
+          `வணக்கம் *${targetBooking.customerName || 'Customer'}*! 🙏\n` +
+          `உங்கள் இல்லத்திற்கு வந்துள்ள எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் *${targetBooking.assignedPartnerName || 'Vignesh S'}* கறைகளை ஆய்வு செய்தார்.\n\n` +
+          `🔬 *ஆய்வு விவரம் (Inspection Findings):*\n` +
+          `இது சாதாரண உப்புக்கறை இல்லைங்க. முன்பு பயன்படுத்திய ஸ்ட்ராங் ஆசிட் காரணமாக டைல்ஸின் மேல் இருக்கும் எனாமல் பளபளப்பு எரிந்துபோய் உள்ளது (*Acid Burn / Permanent Glaze Damage*). இதற்கு மேல் அதிக கெமிக்கல் போட்டு அழுத்தினால் டைல்ஸ் மேலும் சேதமடைய வாய்ப்புள்ளது.\n\n` +
+          `எங்கள் நிறுவனம் 100% நேர்மை மட்டுமே பின்பற்றும்! உங்களுக்காக 2 வழிகள்:\n` +
+          `1️⃣ *PROCEED:* எனாமல் பாதிப்பைத் தவிர்த்து, மற்ற அனைத்து உப்புக்கறை, பேசின், டேப், கம்மோட் அனைத்தையும் தரமாக டீப் கிளீன் செய்து தரலாம் (கட்டணம்: ₹${targetBooking.total || 499}).\n` +
+          `2️⃣ *CANCEL:* இந்த கறை போகாவிட்டால் கிளீனிங் வேண்டாம் என்றால் — *100% Zero Cancellation Fee!* உங்களிடம் ₹1 கூட வாங்காமல் ஆர்டர் ரத்து செய்யப்படும்.\n\n` +
+          `உங்கள் முடிவை:\n` +
+          `👉 *PROCEED* (தொடர) அல்லது\n` +
+          `👉 *CANCEL* (ரத்து செய்ய)\n` +
+          `என்று இங்கு ரிப்ளை செய்யவும்!`;
+
+        await notifier(cTarget, custStainMsg);
+        const cSession = getSession(cMobile);
+        cSession.stage = 'awaiting_stain_decision';
+        cSession.stainRef = targetRef;
+      }
+
+      return `✅ *INSPECTION REPORT SENT TO CUSTOMER!* 📋\n\nRef: *${targetRef}*\nவாடிக்கையாளருக்கு விளக்கம் மற்றும் 2 Options (PROCEED / CANCEL) அனுப்பப்பட்டுள்ளது. வாடிக்கையாளர் ரிப்ளை செய்ததும் உங்களுக்கு உடனே WhatsApp-ல் தகவல் வரும்! தயவுசெய்து 2 நிமிடம் காத்திருக்கவும். 🙏`;
+    }
+  }
+
+  // ── SPECIAL WORKFLOW: CUSTOMER RESPONDING TO STAIN REPORT (PROCEED or CANCEL) ──
+  const isAwaitingStain = session.stage === 'awaiting_stain_decision' || activeBooking?.status === 'inspection_stain_reported';
+  if (isAwaitingStain) {
+    const sRef = session.stainRef || activeBooking?.ref;
+    const pPhone = activeBooking?.assignedPartnerMobile || FOUNDER_PHONE;
+    const pClean = pPhone.replace(/\D/g, '');
+    const pTarget = pClean.length === 10 ? '91' + pClean : pClean;
+
+    // Customer says PROCEED
+    if (/proceed|option 1|clean|continue|sari|pannunga|paravala/i.test(lower)) {
+      session.stage = 'idle';
+      session.stainRef = null;
+
+      await fetch(`${FIREBASE_DB_URL}/bookingLookup/${sRef}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'in_progress', customerStainDecision: 'PROCEED' })
+      });
+
+      if (notifier) {
+        const pAlert = `🔔 *CUSTOMER APPROVED SAFE DEEP CLEAN!* 🔔\n\n` +
+          `Ref: *${sRef}*\n` +
+          `வாடிக்கையாளர் எனாமல் சேதத்தைத் தவிர்த்து, மற்ற இடங்களை டீப் கிளீன் செய்ய ஒப்புக்கொண்டார்! வேலையைத் தொடரலாம். 🧹⚡`;
+        await notifier(pTarget, pAlert);
+      }
+
+      return `✅ *மிக்க நன்றி ${session.name || 'sir'}!* 🙏\n\nஎங்கள் ஸ்பெஷலிஸ்ட் எனாமல் சேதத்தைத் தவிர்த்து, உங்கள் பாத்ரூமின் மற்ற அனைத்து உப்புக்கறை, பேசின், டேப், கம்மோட் பகுதிகளை பளபளப்பாக டீப் கிளீன் செய்து தருவார்! கிளீனிங் முடிந்த பின் சரிபார்த்து கட்டணம் செலுத்தலாம். 🧹✨`;
+    }
+
+    // Customer says CANCEL
+    if (/cancel|vendaam|option 2|close|cancel pannidunga|venda/i.test(lower)) {
+      session.stage = 'idle';
+      session.stainRef = null;
+
+      await fetch(`${FIREBASE_DB_URL}/bookingLookup/${sRef}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'cancelled_enamel_damage', customerStainDecision: 'CANCEL' })
+      });
+
+      if (notifier) {
+        const pAlert = `🛑 *JOB CANCELLED (Mutual Agreement)* 🛑\n\n` +
+          `Ref: *${sRef}*\n` +
+          `வாடிக்கையாளர் ₹0 கட்டணத்தில் ஆர்டரை ரத்து செய்ய ஒப்புக்கொண்டார் (Acid Burn Enamel Damage).\n` +
+          `பொருட்களை எடுத்துக்கொண்டு பாதுகாப்பாக கிளம்பவும்! 👍`;
+        const founderAlert = `📋 *JOB CLOSED (Acid Damage Verified)* 🚨\n\nRef: ${sRef}\nCustomer: ${activeBooking?.customerName || p10}\nClosed with ₹0 charges on mutual customer agreement.`;
+
+        await Promise.allSettled([
+          notifier(pTarget, pAlert),
+          notifier(FOUNDER_PHONE, founderAlert)
+        ]);
+      }
+
+      return `✅ *உங்கள் புக்கிங் (Ref: ${sRef}) ₹0 கட்டணத்தில் வெற்றிகரமாக ரத்து செய்யப்பட்டது!* 🙏\n\nமுன்பணம் எதுவும் இல்லை, கேன்சலேஷன் கட்டணமும் இல்லை. 100% நேர்மை மட்டுமே VS Home Cleaning-ன் பலம்! எதிர்காலத்தில் எங்கள் சேவை தேவைப்பட்டால் எப்போது வேண்டுமானாலும் அழைக்கலாம். Have a wonderful day! 🌸✨`;
+    }
+  }
 
   // 2. Detect delay / complaint / emergency and alert Partner + Founder
   const isEmergency = [
@@ -677,19 +777,14 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       `Online Booking: ${WEBSITE_URL}/booking.html | Helpline: 07971851000`;
   }
 
-  // Contact / Call / Phone Intent
-  if (/call|phone|number|helpline|pesanum|support|contact|contact number/i.test(lower)) {
-    return `📞 *VS Home Cleaning Services 24/7 Support:*\n\n` +
-      `• *Voice Helpline:* 07971851000 (24/7 AI & Operations Manager Saaral)\n` +
-      `• *WhatsApp Helpline:* +91 75581 91073\n` +
-      `• *Website:* ${WEBSITE_URL}\n\n` +
-      `எந்த உதவி தேவைப்பட்டாலும் தயங்காமல் அழைக்கவும் sir! 😊`;
-  }
-
-  // Active Booking Inquiries
+  // Active Booking Inquiries (Priority for Customers with Active Jobs)
   if (activeBooking) {
     if (/^(hi|hello|hey|vanakkam|வணக்கம்|start|saral)/i.test(lower)) {
       return `Vanakkam ${session.name || 'sir'}! 🙏 Naan **Saaral**, VS Home Cleaning Operations Manager. Unga active booking (Ref: *${activeBooking.ref}* - ${activeBooking.serviceType}) paathen. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* assign aagiyirukkaanga. Edhavadhu details venuma sir?`;
+    }
+
+    if (/specialist|cleaner|partner|who is|yaaru|yaar/i.test(lower)) {
+      return `Unga cleaning specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}* (Contact: ${activeBooking.assignedPartnerMobile || '916383458190'}). Specialist arrival-ku munnaadi ungalukku call pannuvaanga sir! 🤝`;
     }
 
     if (/payment|amount|total|charge|evvalavu|panam|cost|fee|bill|pay|kudukanum|evlo/i.test(lower)) {
@@ -704,13 +799,18 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       return `Unga booking slot: *${activeBooking.preferredDate || 'Upcoming'}* at *${activeBooking.preferredTime || '10:00 AM - 12:00 PM'}*. Specialist *${activeBooking.assignedPartnerName || 'Vignesh S'}* on-time-la vandhuduvaanga sir! ⏱️`;
     }
 
-    if (/specialist|cleaner|partner|who is|yaaru|yaar/i.test(lower)) {
-      return `Unga cleaning specialist: *${activeBooking.assignedPartnerName || 'Vignesh S'}* (Contact: ${activeBooking.assignedPartnerMobile || '916383458190'}). Specialist arrival-ku munnaadi ungalukku call pannuvaanga sir! 🤝`;
-    }
-
     if (/cancel/i.test(lower)) {
       return `Unga booking (Ref: *${activeBooking.ref}*) cancel panna virumbureengala sir? Zero cancellation charges! Cancel confirm panna 'CONFIRM CANCEL' nu anupunga, illai helpline 07971851000-ku call pannalaam.`;
     }
+  }
+
+  // Contact / Call / Phone Intent
+  if (/call|phone|number|helpline|pesanum|support|contact|contact number/i.test(lower)) {
+    return `📞 *VS Home Cleaning Services 24/7 Support:*\n\n` +
+      `• *Voice Helpline:* 07971851000 (24/7 AI & Operations Manager Saaral)\n` +
+      `• *WhatsApp Helpline:* +91 75581 91073\n` +
+      `• *Website:* ${WEBSITE_URL}\n\n` +
+      `எந்த உதவி தேவைப்பட்டாலும் தயங்காமல் அழைக்கவும் sir! 😊`;
   }
 
   // General Rate Card
