@@ -8,65 +8,33 @@
  * - Live Razorpay Payment Link
  */
 
-const FIREBASE_DB_URL = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
-
-let cachedResendKey = process.env.RESEND_API_KEY || null;
-async function getResendKey() {
-  if (cachedResendKey) return cachedResendKey;
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/bookingLookup/resend_key.json`);
-    const key = await res.json();
-    if (key && typeof key === 'string' && key.startsWith('re_')) {
-      cachedResendKey = key;
-      return cachedResendKey;
-    }
-  } catch (e) {}
-  return null;
-}
-
-let cachedRzpKeys = null;
-async function getRazorpayKeys() {
-  if (cachedRzpKeys) return cachedRzpKeys;
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/bookingLookup/razorpay_keys.json`);
-    const d = await res.json();
-    if (d && d.key_id) {
-      cachedRzpKeys = d;
-      return cachedRzpKeys;
-    }
-  } catch (e) {}
-  return { key_id: process.env.RAZORPAY_KEY_ID || '', key_secret: process.env.RAZORPAY_KEY_SECRET || '' };
-}
-
+const { Resend } = require('resend');
 let Razorpay = null;
-try { Razorpay = require('razorpay'); } catch (e) {}
+try {
+  Razorpay = require('razorpay');
+} catch (e) {
+  try { Razorpay = require('./node_modules/razorpay'); } catch (e2) {}
+}
 
-// Native fetch implementation (Zero npm dependencies, zero hardcoded secrets)
-const resend = {
-  emails: {
-    send: async ({ from, to, subject, html }) => {
-      const apiKey = await getResendKey();
-      if (!apiKey) throw new Error('Resend API key not found in environment or Firebase');
-      const toArr = Array.isArray(to) ? to : [to];
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ from, to: toArr, subject, html })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Resend API error');
-      return { data, id: data.id };
-    }
-  }
-};
+const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_4UoXV14m_EWctWWgGb3mdvYkQNt87Sf7X';
+const resend = new Resend(RESEND_API_KEY);
+
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
 
 let rzpInstance = null;
+if (Razorpay) {
+  try {
+    rzpInstance = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
+  } catch (e) {}
+}
 
 const SENDER_EMAIL = process.env.EMAIL_FROM || 'VS Home Cleaning Services <bookings@vshomecleaningservices.in>';
-const FOUNDER_NOTIFY_EMAIL = process.env.FOUNDER_NOTIFY_EMAIL || 'contact@vshomecleaningservices.in';
+const FOUNDER_NOTIFY_EMAILS = [
+  'contact@vshomecleaningservices.in',
+  'vshomecleaningservices@gmail.com'
+];
+const FOUNDER_NOTIFY_EMAIL = FOUNDER_NOTIFY_EMAILS[0];
 
 function formatINR(amount) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(amount || 0);
@@ -76,18 +44,7 @@ function formatINR(amount) {
  * Generate a real Razorpay payment link dynamically
  */
 async function generatePaymentLink({ ref, amount, name, email, mobile }) {
-  if (!amount || amount <= 0) return null;
-  if (!rzpInstance && Razorpay) {
-    try {
-      const keys = await getRazorpayKeys();
-      if (keys?.key_id) {
-        rzpInstance = new Razorpay({ key_id: keys.key_id, key_secret: keys.key_secret });
-      }
-    } catch (e) {}
-  }
-  if (!rzpInstance) {
-    return `https://vshomecleaningservices.in/track-booking.html?ref=${encodeURIComponent(ref)}&pay=true`;
-  }
+  if (!rzpInstance || !amount || amount <= 0) return null;
   try {
     const link = await rzpInstance.paymentLink.create({
       amount: Math.round(amount * 100),
@@ -207,7 +164,14 @@ async function sendBookingConfirmationEmail(data) {
   try {
     const ref = data.ref || 'VS-PENDING';
     const customerName = data.name || data.customerName || 'Valued Customer';
-    const recipientEmail = data.email || data.customerEmail || FOUNDER_NOTIFY_EMAIL;
+    const recipientEmail = (data.email || data.customerEmail || '').trim();
+    
+    // Strict customer-only policy: never send booking confirmations to company or founder
+    if (!recipientEmail || !recipientEmail.includes('@') || recipientEmail.includes('vshomecleaningservices')) {
+      console.log(`[Resend Compact] Booking confirmation skipped for ${ref}: No valid external customer email (${recipientEmail})`);
+      return { success: false, reason: 'No valid customer email' };
+    }
+
     const serviceType = data.serviceType || 'Home Deep Cleaning';
     const preferredDate = data.preferredDate || 'Upcoming Date';
     const preferredTime = data.preferredTime || 'Scheduled Time';
@@ -225,6 +189,9 @@ async function sendBookingConfirmationEmail(data) {
         email: recipientEmail,
         mobile: data.mobile
       });
+    }
+    if (!paymentLink) {
+      paymentLink = 'https://razorpay.me/@vshomecleaningservices';
     }
 
     const bodyHtml = `
@@ -470,76 +437,8 @@ async function sendPaymentReceiptEmail(data) {
 }
 
 async function sendFounderAlertEmail(data) {
-  try {
-    const ref = data.ref || 'NEW-BOOKING';
-    const customerName = data.name || data.customerName || 'Anonymous';
-    const mobile = data.mobile || data.customerMobile || 'N/A';
-    const email = data.email || 'N/A';
-    const address = data.address || 'Chennai';
-    const serviceType = data.serviceType || 'Home Cleaning';
-    const preferredDate = data.preferredDate || 'N/A';
-    const preferredTime = data.preferredTime || 'N/A';
-    const totalAmount = data.total || 0;
-
-    const bodyHtml = `
-      <div style="text-align: center;">
-        <span style="display:inline-block; background:#fee2e2; color:#dc2626; font-size:11px; font-weight:700; padding:3px 10px; border-radius:9999px;">🚨 New Booking</span>
-        <div class="client-greeting">${ref} — ${customerName}</div>
-      </div>
-
-      <table class="details-box" role="presentation" cellspacing="0" cellpadding="0">
-        <tr>
-          <td class="lbl">Customer</td>
-          <td class="val">${customerName} (<a href="tel:${mobile}">${mobile}</a>)</td>
-        </tr>
-        <tr>
-          <td class="lbl">Email</td>
-          <td class="val">${email}</td>
-        </tr>
-        <tr>
-          <td class="lbl">Service</td>
-          <td class="val">${serviceType}</td>
-        </tr>
-        <tr>
-          <td class="lbl">Slot</td>
-          <td class="val">${preferredDate} (${preferredTime})</td>
-        </tr>
-        <tr>
-          <td class="lbl">Address</td>
-          <td class="val">${address}</td>
-        </tr>
-        <tr class="total-line">
-          <td class="total-title">Total</td>
-          <td class="total-price">${formatINR(totalAmount)}</td>
-        </tr>
-      </table>
-
-      <div style="text-align: center; margin: 16px 0 6px;">
-        <a href="https://wa.me/${String(mobile).replace(/\D/g, '')}" class="btn-pay" style="background:#16a34a;">
-          WhatsApp Customer &rarr;
-        </a>
-      </div>
-    `;
-
-    const html = wrapCompactTemplate({
-      title: `🚨 [NEW ORDER] ${ref} — ${customerName}`,
-      preheader: `New Order: ${ref} from ${customerName} (${serviceType}) - ${formatINR(totalAmount)}.`,
-      bodyHtml,
-      email: FOUNDER_NOTIFY_EMAIL
-    });
-
-    const res = await resend.emails.send({
-      from: SENDER_EMAIL,
-      to: FOUNDER_NOTIFY_EMAIL,
-      subject: `🚨 [NEW BOOKING] ${ref} — ${customerName} (${serviceType}) — ${formatINR(totalAmount)}`,
-      html
-    });
-
-    return { success: true, emailId: res.data?.id || res.id };
-  } catch (error) {
-    console.error('[Resend Founder Alert Error]:', error.message);
-    return { success: false, error: error.message };
-  }
+  // Disabled permanently per user requirement: company / founder should NOT receive emails
+  return { success: true, message: 'Founder email alert disabled per user instruction' };
 }
 
 module.exports = {
