@@ -16,9 +16,8 @@ try {
   try { Razorpay = require('./node_modules/razorpay'); } catch (e2) {}
 }
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_4UoXV14m_EWctWWgGb3mdvYkQNt87Sf7X';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const resend = new Resend(RESEND_API_KEY);
-
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
 
