@@ -525,7 +525,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   // ── SPECIAL WORKFLOW: PARTNER REPORTING UNREMOVABLE STAIN / ACID DAMAGE ──
   const isStainReport = /stain|acid|damage|enamel|burn|karai|pogala/i.test(lower);
-  if (isStainReport && refInText && notifier) {
+  if (isStainReport && refInText) {
     const targetRef = refInText[0].toUpperCase();
     const targetBooking = await lookupBooking(targetRef);
     if (targetBooking) {
@@ -555,7 +555,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
           `👉 *CANCEL* (ரத்து செய்ய)\n` +
           `என்று இங்கு ரிப்ளை செய்யவும்!`;
 
-        await notifier(cTarget, custStainMsg);
+        if (notifier) await notifier(cTarget, custStainMsg);
         const cSession = getSession(cMobile);
         cSession.stage = 'awaiting_stain_decision';
         cSession.stainRef = targetRef;
@@ -574,7 +574,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     const pTarget = pClean.length === 10 ? '91' + pClean : pClean;
 
     // Customer says PROCEED
-    if (/proceed|option 1|clean|continue|sari|pannunga|paravala/i.test(lower)) {
+    if (/proceed|option 1|clean|continue|sari|pannunga|paravala|safe/i.test(lower)) {
       session.stage = 'idle';
       session.stainRef = null;
 
@@ -595,7 +595,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     }
 
     // Customer says CANCEL
-    if (/cancel|vendaam|option 2|close|cancel pannidunga|venda/i.test(lower)) {
+    if (/cancel|vendaam|option 2|close|cancel pannidunga|venda|zero fee|close order/i.test(lower)) {
       session.stage = 'idle';
       session.stainRef = null;
 
@@ -624,10 +624,10 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
 
   // 2. Detect delay / complaint / emergency and alert Partner + Founder
   const isEmergency = [
-    'not arrived', 'didnt come', 'did not come', 'delay', 'delayed', 'late', 'where is', 'call me',
+    'not arrived', 'didnt come', "didn't come", 'did not come', 'delay', 'delayed', 'where is', 'call me',
     'varala', 'varalaye', 'innum varala', 'eppo varuvaar', 'cleaner varala', 'partner varala', 'late aaguthu',
-    'cancel', 'complaint', 'problem', 'issue', 'bad service', 'cheat', 'urgent', 'emergency', 'help', 'cleaner enga'
-  ].some(k => lower.includes(k));
+    'complaint', 'problem', 'bad service', 'cheat', 'urgent', 'emergency', 'help me', 'cleaner enga'
+  ].some(k => lower.includes(k)) || (/\blate\b/i.test(lower) && !/later/i.test(lower));
 
   let partnerAlertSent = false;
   if (isEmergency && notifier) {
@@ -695,15 +695,55 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
     return `Romba sorry for the delay / inconvenience! 🙏\n\nUnga booking (${ref}) specialist **${partnerName}**-ku ippove urgent WhatsApp alert send pannittaen. Avanga ungalukku call panra maathiri inform pannirukkom.\n\nFounder Vignesh-kum direct notification poirukku. Urgent help-ku call: ${SUPPORT_PHONE}`;
   }
 
-  // Polite acknowledgments / closers ("Okey", "Okey done", "Thanks", "Super", "Sari")
-  const isCloser = /^(ok|okey|okay|ok done|okey done|okay done|done|all done|sari|seri|super|thanks|thank you|thx|nandri|great|perfect|sure|bye|good night|tq)$/i.test(lower) ||
-    /^(ok|okey|okay|thanks|thank you|nandri|sari|super)\s*(pa|bro|sir|mam|saral|ji)?[.!]?$/i.test(lower);
+  // Polite acknowledgments / closers ("Okey", "Okey done", "Thanks", "Super", "Sari", "Pathutu solra")
+  const isCloser = /^(ok|okey|okay|ok done|okey done|okay done|done|all done|sari|seri|super|thanks|thank you|thx|nandri|great|perfect|sure|bye|good night|tq)($|\b|[.!]|\s)/i.test(lower.trim()) ||
+    /^(ok|okey|okay|thanks|thank you|nandri|sari|super)\s*(pa|bro|sir|mam|saral|ji)?[.!]?$/i.test(lower) ||
+    /pathutu solra|paathutu solren|apram solren|aprom solran|later|afterwards|call you later|will let you know|check pannitu solren/i.test(lower);
 
   if (isCloser) {
     if (activeBooking) {
       return `Nandri ${session.name || 'sir'}! 🙏 Unga specialist **${activeBooking.assignedPartnerName || 'Vignesh S'}** on-time-la vandhu super-ah clean panni tharuvaanga. Edhavadhu thevaippatta eppo vena inga message pannalaam or call 07971851000. Have a great day! 🌸✨`;
     }
-    return `Nandri ${session.name || 'sir'}! 🙏 Edhavadhu services thevaippatta eppo vena inga message pannalaam. Have a wonderful day! 🌸✨`;
+    return `Kandippa ${session.name || 'sir'}! 🙏 Ungalukku eppo cleaning services thevaipattalum ingaye WhatsApp-la sollunga. Naanga Chennai full-ah quick slots arrange pannuvom. Have a wonderful day! 🌸✨\n\n(24/7 Voice Helpline: 07971851000)`;
+  }
+
+  // ── NUMERIC SHORTCUTS (1, 2, 3) & MENU OPTIONS ──
+  // Option 1: New Booking
+  if (/^(1|option 1|one)\s*$/i.test(lower.trim())) {
+    return `🧹 *VS Home Cleaning Services — Quick Booking*\n\n` +
+      `Ungalukku entha service thevai?\n` +
+      `1️⃣ *Bathroom Deep Cleaning:* ₹499 per bathroom\n` +
+      `2️⃣ *Kitchen Deep Cleaning:* ₹1,399 (Full Kitchen)\n` +
+      `3️⃣ *Sofa Shampooing:* ₹899 (3-Seater) / ₹1,399 (5-Seater)\n` +
+      `4️⃣ *Full Home Deep Cleaning:* ₹2,499 (1 BHK) / ₹3,499 (2 BHK)\n\n` +
+      `👉 *Direct Online Booking:* ${WEBSITE_URL}/booking.html\n` +
+      `Or unga Service Name, Area (e.g. Velachery) & Preferred Slot inga reply pannunga, naan slot book panniduren! 😊 (Zero Advance)`;
+  }
+
+  // Option 2: Rate Card
+  if (/^(2|option 2|two)\s*$/i.test(lower.trim())) {
+    return `💰 *VS Home Cleaning Services — Official Rates*\n\n` +
+      `• *Bathroom Deep Clean:* ₹499 per bathroom\n` +
+      `• *Kitchen Deep Clean:* ₹1,399 (Complete Kitchen)\n` +
+      `• *Sofa Shampooing:* ₹899 (3-Seater) / ₹1,399 (5-Seater)\n` +
+      `• *Full Home Deep Clean:* ₹2,499 (1 BHK) / ₹3,499 (2 BHK) / ₹4,499 (3 BHK)\n` +
+      `• *Water Tank / Sump:* ₹699\n\n` +
+      `💯 *100% Zero Advance:* Pay only after service inspection!\n` +
+      `👉 *Direct Booking:* ${WEBSITE_URL}/booking.html ✨`;
+  }
+
+  // Option 3: Active Booking Status & Tracker
+  if (/^(3|option 3|three)\s*$/i.test(lower.trim()) || (/status|track|nilavaram|booking status|en booking|cleaner enga/i.test(lower) && !/sofa|bhk|bed|couch|bath|kitchen/i.test(lower))) {
+    if (activeBooking) {
+      return `🔍 *Unga Active Booking Status (Ref: ${activeBooking.ref})* 📋\n\n` +
+        `• *Service:* ${activeBooking.serviceType || 'Home Cleaning'}\n` +
+        `• *Slot:* ${activeBooking.time || activeBooking.scheduledSlot || 'Tomorrow 10:00 AM'}\n` +
+        `• *Specialist:* ${activeBooking.assignedPartnerName || 'Vignesh S'} (${activeBooking.assignedPartnerMobile || '916383458190'})\n` +
+        `• *Total:* ₹${activeBooking.total || 499} (முன்பணம் ஏதுமில்லை — வேலை முடிந்த பின் செலுத்தலாம்)\n` +
+        `• *Status:* ${activeBooking.status || 'Team Assigned'}\n\n` +
+        `Specialist குறித்த நேரத்தில் உங்கள் இல்லத்திற்கு வந்துவிடுவார்! உதவிக்கு: 07971851000 🧹✨`;
+    }
+    return `🔍 Unga number (+91 ${p10})-la ippo active booking ethuvum kaattala sir.\n\nNeenga vera number-la book panniruntha, unga *Booking Reference Number* (e.g. VS-XXXXXX) anupunga, naan live status paarthu solren! 📋\n\nNew Booking panna: ${WEBSITE_URL}/booking.html ✨`;
   }
 
   // Greetings
@@ -813,6 +853,39 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       `எந்த உதவி தேவைப்பட்டாலும் தயங்காமல் அழைக்கவும் sir! 😊`;
   }
 
+  // Payment / Advance Policy Intent
+  if (/advance|payment|pay|cash|upi|gpay|card|kattanam/i.test(lower)) {
+    return `💰 *VS Home Cleaning Payment Policy — 100% Zero Advance!*\n\n` +
+      `• *முன்பணம் ஏதுமில்லை!* கிளீனிங் முடிந்த பிறகு, நீங்கள் முழுமையாக சரிபார்த்து திருப்தி அடைந்த பின் மட்டுமே பணம் செலுத்த வேண்டும்.\n` +
+      `• *Payment Methods:* Cash on Service or Online UPI (GPay / PhonePe / Paytm / QR Scanner).\n\n` +
+      `Direct Online Booking: ${WEBSITE_URL}/booking.html ✨`;
+  }
+
+  // Materials & Equipment Intent
+  if (/material|chemical|machine|equipment|tools|porul/i.test(lower)) {
+    return `🧰 *VS Home Cleaning Materials & Equipment:*\n\n` +
+      `• எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட்டுகள் அனைத்து தரமான Acid-Free ஜெர்மன் பார்முலா கிளீனிங் கெமிக்கல்கள், High-Power Vacuum Extraction Machine, Single Disc Scrubber மற்றும் மைக்ரோஃபைபர் துணிகளை அவர்களே எடுத்து வருவார்கள்!\n` +
+      `• நீங்கள் தண்ணீர் மற்றும் மின்சாரம் (Power supply) மட்டும் கொடுத்தால் போதும் sir! 😊\n\n` +
+      `Book directly here or call 07971851000! ✨`;
+  }
+
+  // Duration / Time Intent
+  if (/how much time|evlo neram|duration|how long/i.test(lower)) {
+    return `⏱️ *Service Duration (தோராயமான நேரம்):*\n\n` +
+      `• *Bathroom Deep Clean:* 1.5 முதல் 2 மணி நேரம்\n` +
+      `• *Kitchen Deep Clean:* 3 முதல் 4 மணி நேரம்\n` +
+      `• *Sofa Shampooing:* 1 முதல் 1.5 மணி நேரம்\n` +
+      `• *Full Home Deep Clean:* 5 முதல் 7 மணி நேரம்\n\n` +
+      `எங்கள் ஸ்பெஷலிஸ்ட் ஒவ்வொரு இடத்தையும் நுணுக்கமாக கிளீன் செய்து தருவார்! ✨`;
+  }
+
+  // General Cancellation Request without Active Booking
+  if (/cancel|vendaam|close order|venda/i.test(lower)) {
+    return `✅ *VS Home Cleaning Cancellation Policy — 100% Zero Fee!*\n\n` +
+      `எங்கள் சேவையில் எந்தவிதமான முன்பணமும் இல்லை, கேன்சலேஷன் கட்டணமும் இல்லை (100% Zero Cancellation Fee). நீங்கள் எப்போது வேண்டுமானாலும் ரத்து செய்யலாம் அல்லது நேரத்தை மாற்றிக்கொள்ளலாம்!\n\n` +
+      `உதவிக்கு எங்கள் 24/7 ஹெல்ப்லைனை அழைக்கலாம்: 07971851000. Have a great day! 🌸✨`;
+  }
+
   // General Rate Card
   if (/price|cost|rate|rates|charges|vilai/i.test(lower)) {
     return `🧹 *VS Home Cleaning Services — Official Rates*\n\n` +
@@ -880,5 +953,6 @@ async function handleCartOrder(phone, orderMsg, pushName) {
 module.exports = {
   processCustomerMessage,
   handleCartOrder,
-  saveBookingToFirebase
+  saveBookingToFirebase,
+  getSession
 };
