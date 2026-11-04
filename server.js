@@ -684,7 +684,7 @@ app.post('/api/chat', async (req, res) => {
     const name = req.body?.name || 'Customer';
     if (!text) return res.json({ reply: 'வணக்கம்! உங்களுக்கு எப்படி உதவட்டும்?' });
 
-    const reply = await saralAgent.processCustomerMessage(phone, text, name, null);
+    const reply = await saralAgent.processCustomerMessage(phone, text, name, (to, alertText) => sendWhatsAppMessage(to, alertText));
     res.json({ reply });
   } catch (err) {
     console.error('Web Chat API error:', err);
