@@ -631,6 +631,50 @@ app.post('/api/send-confirmation', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 1.45. API: PARTNER INSPECTION STAIN REPORT (ACID BURN / PERMANENT DAMAGE)
+// -------------------------------------------------------------
+app.post('/api/partner/report-stain', async (req, res) => {
+  try {
+    const { ref, reason = 'Acid Burn / Enamel Damage', photoUrl } = req.body;
+    if (!ref) return res.status(400).json({ success: false, error: 'Booking ref required' });
+
+    const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/${ref}.json`);
+    const booking = await fbRes.json();
+    if (!booking || booking.error) return res.status(404).json({ success: false, error: 'Booking not found' });
+
+    await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/${ref}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'inspection_stain_reported',
+        stainReportedAt: Date.now(),
+        stainReason: reason,
+        stainPhoto: photoUrl || null
+      })
+    });
+
+    const cMobile = String(booking.customerMobile || booking.mobile || '').replace(/\D/g, '').slice(-10);
+    if (cMobile) {
+      const custMsg = `⚠️ *VS HOME CLEANING — INSPECTION REPORT* ⚠️\n\n` +
+        `வணக்கம் *${booking.customerName || 'Customer'}*! 🙏\n` +
+        `உங்கள் இல்லத்திற்கு வந்துள்ள எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் *${booking.assignedPartnerName || 'Vignesh S'}* கறைகளை ஆய்வு செய்தார்.\n\n` +
+        `🔬 *ஆய்வு விவரம்:*\n` +
+        `இது சாதாரண உப்புக்கறை இல்லை. முன்பு பயன்படுத்திய ஸ்ட்ராங் ஆசிட் காரணமாக டைல்ஸின் மேல் இருக்கும் எனாமல் எரிந்துபோய் உள்ளது (*Acid Burn Glaze Damage*).\n\n` +
+        `உங்களுக்காக 2 வழிகள்:\n` +
+        `1️⃣ *PROCEED:* எனாமல் பாதிப்பைத் தவிர்த்து மற்ற அனைத்து இடங்களையும் தரமாக டீப் கிளீன் செய்யலாம் (கட்டணம்: ₹${booking.total || 499}).\n` +
+        `2️⃣ *CANCEL:* இந்த கறை போகாவிட்டால் கிளீனிங் வேண்டாம் என்றால் — *100% Zero Cancellation Fee!* கட்டணம் எதுவுமின்றி ரத்து செய்யப்படும்.\n\n` +
+        `உங்கள் முடிவை:\n👉 *PROCEED* அல்லது *CANCEL* என இங்கு மெசேஜ் செய்யவும்!`;
+      await sendWhatsAppMessage(cMobile, custMsg);
+      logDispatch('Stain Inspection Report', cMobile, `Stain Alert: ${ref}`, 'Delivered');
+    }
+
+    res.json({ success: true, message: 'Stain report dispatched to customer' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
 // 1.5. API: WEB CHAT & VOICE COMPANION (POWERS WEBSITE SAARAL AI)
 // -------------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
