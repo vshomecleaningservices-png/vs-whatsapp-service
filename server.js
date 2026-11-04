@@ -455,8 +455,9 @@ app.post('/api/send-confirmation', async (req, res) => {
       `🛠️ *Service:* ${service || 'Home Cleaning'}\n` +
       `📅 *Date:* ${date}\n` +
       `⏰ *Time Slot:* ${time}\n` +
-      `💰 *Estimated Total:* ₹${total || 499}\n` +
+      `💰 *Total Amount:* ₹${total || 499}\n` +
       `📍 *Location:* ${address || 'Chennai'}\n\n` +
+      `💳 *Online Payment Link (Cards/UPI/NetBanking):*\nhttps://razorpay.me/@vshomecleaningservices\n\n` +
       `🔍 *Live Tracking Link:* \n${CONFIG.TRACKING_BASE_URL}?id=${ref}\n\n` +
       `எங்கள் கிளீனர் ஒதுக்கப்பட்டு விரைவில் உங்களை தொடர்பு கொள்வார்.\n` +
       `உதவிக்கு என்னை அழைக்கவும்: ${CONFIG.SUPPORT_PHONE}`;
@@ -464,7 +465,7 @@ app.post('/api/send-confirmation', async (req, res) => {
     const custResult = await sendWhatsAppMessage(phone, customerMsg);
     logDispatch('Booking Confirmation', phone, `${ref} · ${service}`, 'Delivered');
 
-    // Admin Notification
+    // Admin Notification (goes strictly to Founder/Admin phone)
     const adminMsg = `🚨 *NEW BOOKING RECEIVED* 🚨\n\n` +
       `📋 *Ref:* ${ref}\n` +
       `👤 *Customer:* ${name} (+${phone})\n` +
@@ -478,85 +479,27 @@ app.post('/api/send-confirmation', async (req, res) => {
     await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, adminMsg);
     logDispatch('Admin Booking Alert', CONFIG.ADMIN_PHONE, `Alert: ${ref}`, 'Delivered');
 
-    // ✅ Automated Email Dispatch (Customer Confirmation + Founder Alert)
-    if (emailService) {
-      const emailPayload = {
-        ref,
-        name,
-        email: req.body?.email || null,
-        mobile: phone,
-        serviceType: service,
-        preferredDate: date,
-        preferredTime: time,
-        total,
-        address
-      };
-      Promise.allSettled([
-        emailService.sendBookingConfirmationEmail(emailPayload),
-        emailService.sendFounderAlertEmail(emailPayload)
-      ]).catch(e => console.error('[Email Notice]:', e.message));
-    }
-
-    // ✅ Auto-assign to partner: check availability and write to Firebase partnerJobs
+    // ✅ Auto-assign to partner: write to Firebase partnerJobs/${partnerUid}/${ref}
     try {
       const FIREBASE_DB = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
-      let partnerUid = 'partner-1';
+      // Find active verified partner (default Vignesh S)
+      let partnerUid = 'tbZWKoYLt9N7pdY9hf7RvgVGSvp2';
       let partnerName = 'Vignesh S';
       let partnerPhone = '916383458190';
-      let isPartnerAvailable = true;
-
       try {
-        const pRes = await fetch(`${FIREBASE_DB}/bookingLookup/partners.json`);
+        const pRes = await fetch(`${FIREBASE_DB}/partners.json`);
         const pData = await pRes.json();
-        if (pData && !pData.error && typeof pData === 'object' && Object.keys(pData).length > 0) {
-          let foundFreePartner = false;
-          // Check existing bookings for collision
-          let existingBookings = {};
-          try {
-            const bRes = await fetch(`${FIREBASE_DB}/bookingLookup/recent_bookings.json`);
-            existingBookings = (await bRes.json()) || {};
-          } catch (e) {}
-
+        if (pData && !pData.error && typeof pData === 'object') {
           for (const k of Object.keys(pData)) {
-            const p = pData[k];
-            if (p && (p.accountStatus === 'active' || !p.accountStatus)) {
-              let isBusy = false;
-              for (const b of Object.values(existingBookings)) {
-                if (!b || b.status === 'cancelled') continue;
-                if (b.assignedTo === k && String(b.preferredDate || '').trim() === String(date || '').trim() && String(b.preferredTime || '').trim() === String(time || '').trim()) {
-                  isBusy = true;
-                  break;
-                }
-              }
-              if (!isBusy) {
-                partnerUid = k;
-                partnerName = p.name || 'Vignesh S';
-                partnerPhone = p.phone || p.phoneNumber || '916383458190';
-                foundFreePartner = true;
-                break;
-              }
+            if (pData[k] && (pData[k].accountStatus === 'active' || pData[k].verificationStatus === 'verified' || !pData[k].accountStatus)) {
+              partnerUid = k;
+              partnerName = pData[k].name || 'Vignesh S';
+              partnerPhone = pData[k].phone || pData[k].phoneNumber || '916383458190';
+              break;
             }
-          }
-          if (!foundFreePartner) {
-            isPartnerAvailable = false;
           }
         }
       } catch (e) {}
-
-      if (!isPartnerAvailable) {
-        // Specialist busy/unavailable alert to partner & founder
-        const alertMsg = `🚨 *NO SPECIALIST AVAILABLE (Website Booking)* 🚨\n\n` +
-          `வாடிக்கையாளர்: ${name} (+${phone})\n` +
-          `கேட்ட தேதி & நேரம்: ${date} (${time})\n` +
-          `சேவை: ${service}\n` +
-          `முகவரி: ${address}\n` +
-          `தொகை: ₹${total}\n` +
-          `Ref: ${ref}\n\n` +
-          `⚠️ அந்த நேரத்தில் அனைத்து ஸ்பெஷலிஸ்ட்டுகளும் பிஸியாக உள்ளதால் ஆட்டோ-அசைன் ஆகவில்லை.\n` +
-          `தயவுசெய்து உடனடியாக வாடிக்கையாளரைத் தொடர்புகொண்டு மேனுவலாக நேரத்தை அசைன் செய்யவும்! ⚡`;
-        await sendWhatsAppMessage(CONFIG.ADMIN_PHONE, alertMsg);
-        logDispatch('No Specialist Alert', CONFIG.ADMIN_PHONE, `Ref: ${ref}`, 'Delivered');
-      } else {
 
       const jobPayload = {
         bookingRef: ref,
@@ -568,18 +511,33 @@ app.post('/api/send-confirmation', async (req, res) => {
         date: date,
         time: time,
         price: total || 499,
+        serviceValue: total || 499,
         status: 'pending',
         assignedTo: partnerUid,
+        assignedPartnerId: partnerUid,
         assignedPartnerName: partnerName,
         assignedPartnerMobile: partnerPhone,
         createdAt: Date.now(),
         bookedVia: 'Website'
       };
 
-      await fetch(`${FIREBASE_DB}/partnerJobs/${ref}.json`, {
+      // ✅ 1. Correct Partner App path: partnerJobs/{partnerUid}/{ref} (triggers real-time WebSocket alert)
+      await fetch(`${FIREBASE_DB}/partnerJobs/${partnerUid}/${ref}.json`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(jobPayload)
+      });
+
+      // ✅ 2. Update booking in bookings/{ref}
+      await fetch(`${FIREBASE_DB}/bookings/${ref}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignedPartnerId: partnerUid,
+          assignedPartnerName: partnerName,
+          assignedPartnerMobile: partnerPhone,
+          status: 'Confirmed'
+        })
       });
 
       // Also update bookingLookup with partner info
@@ -605,70 +563,26 @@ app.post('/api/send-confirmation', async (req, res) => {
         });
       }
 
-      // Send partner WhatsApp alert
+      // ✅ 3. Send clean Partner WhatsApp alert (NO admin dashboard link!)
       const partMsg = `🔔 *NEW CLEANING JOB ASSIGNED* 🔔\n\n` +
-        `வணக்கம் ${partnerName}!\n` +
-        `Website-ல புதிய புக்கிங் வந்தது:\n\n` +
+        `வணக்கம் *${partnerName}*!\n` +
+        `உங்களுக்கு ஒரு புதிய கிளீனிங் ஆர்டர் ஒதுக்கப்பட்டுள்ளது:\n\n` +
         `📋 *Job Ref:* ${ref}\n` +
-        `👤 *Customer:* ${name}\n` +
-        `🛠️ *Service:* ${service}\n` +
+        `👤 *Customer:* ${name} (+${phone})\n` +
+        `🛠️ *Service:* ${service || 'Home Cleaning'}\n` +
         `📅 *Date & Slot:* ${date} (${time})\n` +
-        `📍 *Address:* ${address}\n` +
-        `💰 *Amount:* ₹${total}\n\n` +
-        `⚡ Admin Dashboard: https://vshomecleaningservices.in/admin.html`;
+        `📍 *Address:* ${address || 'Chennai'}\n` +
+        `💰 *Estimated Value:* ₹${total || 499}\n\n` +
+        `📲 தயவுசெய்து உங்கள் *VS Partner App*-ஐ திறந்து ஆர்டரை ஏற்கவும் (Accept/Reject).\n` +
+        `உதவிக்கு: ${CONFIG.SUPPORT_PHONE}`;
       await sendWhatsAppMessage(partnerPhone, partMsg);
       logDispatch('Job Alert (Partner - Website)', partnerPhone, `Job: ${ref}`, 'Delivered');
-      } // close else
 
     } catch (assignErr) {
       console.error('[Auto-Assign Notice]:', assignErr.message);
     }
 
     res.json({ success: true, ref, customerPhone: phone, result: custResult });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// -------------------------------------------------------------
-// 1.45. API: PARTNER INSPECTION STAIN REPORT (ACID BURN / PERMANENT DAMAGE)
-// -------------------------------------------------------------
-app.post('/api/partner/report-stain', async (req, res) => {
-  try {
-    const { ref, reason = 'Acid Burn / Enamel Damage', photoUrl } = req.body;
-    if (!ref) return res.status(400).json({ success: false, error: 'Booking ref required' });
-
-    const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/${ref}.json`);
-    const booking = await fbRes.json();
-    if (!booking || booking.error) return res.status(404).json({ success: false, error: 'Booking not found' });
-
-    await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/${ref}.json`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'inspection_stain_reported',
-        stainReportedAt: Date.now(),
-        stainReason: reason,
-        stainPhoto: photoUrl || null
-      })
-    });
-
-    const cMobile = String(booking.customerMobile || booking.mobile || '').replace(/\D/g, '').slice(-10);
-    if (cMobile) {
-      const custMsg = `⚠️ *VS HOME CLEANING — INSPECTION REPORT* ⚠️\n\n` +
-        `வணக்கம் *${booking.customerName || 'Customer'}*! 🙏\n` +
-        `உங்கள் இல்லத்திற்கு வந்துள்ள எங்கள் கிளீனிங் ஸ்பெஷலிஸ்ட் *${booking.assignedPartnerName || 'Vignesh S'}* கறைகளை ஆய்வு செய்தார்.\n\n` +
-        `🔬 *ஆய்வு விவரம்:*\n` +
-        `இது சாதாரண உப்புக்கறை இல்லை. முன்பு பயன்படுத்திய ஸ்ட்ராங் ஆசிட் காரணமாக டைல்ஸின் மேல் இருக்கும் எனாமல் எரிந்துபோய் உள்ளது (*Acid Burn Glaze Damage*).\n\n` +
-        `உங்களுக்காக 2 வழிகள்:\n` +
-        `1️⃣ *PROCEED:* எனாமல் பாதிப்பைத் தவிர்த்து மற்ற அனைத்து இடங்களையும் தரமாக டீப் கிளீன் செய்யலாம் (கட்டணம்: ₹${booking.total || 499}).\n` +
-        `2️⃣ *CANCEL:* இந்த கறை போகாவிட்டால் கிளீனிங் வேண்டாம் என்றால் — *100% Zero Cancellation Fee!* கட்டணம் எதுவுமின்றி ரத்து செய்யப்படும்.\n\n` +
-        `உங்கள் முடிவை:\n👉 *PROCEED* அல்லது *CANCEL* என இங்கு மெசேஜ் செய்யவும்!`;
-      await sendWhatsAppMessage(cMobile, custMsg);
-      logDispatch('Stain Inspection Report', cMobile, `Stain Alert: ${ref}`, 'Delivered');
-    }
-
-    res.json({ success: true, message: 'Stain report dispatched to customer' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -684,7 +598,7 @@ app.post('/api/chat', async (req, res) => {
     const name = req.body?.name || 'Customer';
     if (!text) return res.json({ reply: 'வணக்கம்! உங்களுக்கு எப்படி உதவட்டும்?' });
 
-    const reply = await saralAgent.processCustomerMessage(phone, text, name, (to, alertText) => sendWhatsAppMessage(to, alertText));
+    const reply = await saralAgent.processCustomerMessage(phone, text, name, null);
     res.json({ reply });
   } catch (err) {
     console.error('Web Chat API error:', err);
@@ -820,7 +734,7 @@ app.post('/api/verify-payment', async (req, res) => {
 });
 
 
-// 1.8. RESEND AUTOMATED BOOKING CONFIRMATION & FOUNDER ALERT
+// 1.8. RESEND AUTOMATED CUSTOMER BOOKING CONFIRMATION
 // -------------------------------------------------------------
 app.post('/api/send-booking-email', async (req, res) => {
   try {
@@ -830,15 +744,14 @@ app.post('/api/send-booking-email', async (req, res) => {
     }
 
     if (emailService) {
-      const results = await Promise.allSettled([
-        emailService.sendBookingConfirmationEmail(booking),
-        emailService.sendFounderAlertEmail(booking)
-      ]);
+      if (!booking.email && !booking.customerEmail) {
+        return res.json({ success: true, message: 'No customer email provided; founder alert disabled per policy' });
+      }
+      const confirmationResult = await emailService.sendBookingConfirmationEmail(booking);
       return res.json({
         success: true,
-        message: 'Email automation dispatched',
-        confirmation: results[0]?.value,
-        founderAlert: results[1]?.value
+        message: 'Customer email dispatched',
+        confirmation: confirmationResult
       });
     }
 
@@ -1039,16 +952,14 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
     // B. Direct request parameters
     if (!rawInput) {
       rawInput = req.body?.query || req.body?.phone || req.body?.mobile || req.body?.ref || req.body?.order_id ||
-                 req.query?.query || req.query?.phone || req.query?.mobile || req.query?.ref || req.query?.customerPhone || '';
+                 req.query?.query || req.query?.phone || req.query?.mobile || req.query?.ref || '';
     }
 
-    // C. Fallback to caller phone from Vapi (URL query & webhook payload)
-    const callerPhone = req.query?.customerPhone ||
-                        req.query?.caller ||
-                        req.body?.customerPhone ||
-                        req.body?.message?.call?.customer?.number ||
+    // C. Fallback to caller phone from Vapi
+    const callerPhone = req.body?.message?.call?.customer?.number ||
                         req.body?.message?.customer?.number ||
-                        req.body?.call?.customer?.number || '';
+                        req.body?.call?.customer?.number ||
+                        req.body?.customerPhone || '';
 
     if (!rawInput && callerPhone) {
       rawInput = callerPhone;
@@ -1056,29 +967,12 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
 
     rawInput = String(rawInput || '').trim();
 
-    // Decode spoken Tamil / phonetic number words if present
-    const tamilNumMap = {
-      'டபுள் ஜீரோ': '00', 'பூஜ்யம்': '0', 'ஜீரோ': '0', 'ஒன்று': '1', 'ஒன்': '1',
-      'இரண்டு': '2', 'டூ': '2', 'மூன்று': '3', 'த்ரீ': '3', 'நான்கு': '4', 'ஃபோர்': '4',
-      'ஐந்து': '5', 'ஃபைவ்': '5', 'ஆறு': '6', 'சிக்ஸ்': '6', 'ஏழு': '7', 'செவன்': '7',
-      'எவன்': '7', 'எட்டு': '8', 'எயிட்': '8', 'ஒன்பது': '9', 'நைன்': '9'
-    };
-    let parsedInput = rawInput;
-    for (const [w, d] of Object.entries(tamilNumMap)) {
-      parsedInput = parsedInput.split(w).join(d);
-    }
-
     let booking = null;
     let ref = null;
 
-    const clean = parsedInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-    const digitsOnly = parsedInput.replace(/\D/g, '');
-    let p10 = null;
-    if (digitsOnly.length === 10) {
-      p10 = digitsOnly;
-    } else if (digitsOnly.length > 10) {
-      p10 = digitsOnly.slice(-10);
-    }
+    const clean = rawInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const digitsOnly = rawInput.replace(/\D/g, '');
+    const p10 = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : null;
 
     // 1. If 10-digit phone number, check phone mirror
     if (p10 && !clean.startsWith('VS')) {
@@ -1121,6 +1015,7 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
             if (p10 && bMobile === p10) return true;
             const bRefClean = String(b.ref || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
             if (clean && (bRefClean === clean || bRefClean.includes(clean) || clean.includes(bRefClean))) return true;
+            // Match 6 digit date pattern (e.g. 261102)
             const dateMatch = clean.match(/\d{6}/);
             if (dateMatch && bRefClean.includes(dateMatch[0])) return true;
             return false;
@@ -1133,23 +1028,8 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
       } catch (e) {}
     }
 
-    // 4. Critical Fallback: If still not found, check caller's own incoming phone number!
-    if (!booking && callerPhone) {
-      const c10 = callerPhone.replace(/\D/g, '').slice(-10);
-      if (c10 && c10 !== p10) {
-        try {
-          const fbRes = await fetch(`https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/by_phone_${c10}.json`);
-          const phoneData = await fbRes.json();
-          if (phoneData && !phoneData.error && phoneData.ref) {
-            booking = phoneData;
-            ref = booking.ref;
-          }
-        } catch (e) {}
-      }
-    }
-
     if (!booking) {
-      const notFoundReply = "மன்னிச்சுக்கோங்க, அந்த விவரத்துல ஆக்டிவ் புக்கிங் எதுவும் கிடைக்கலங்க. நீங்க வெப்சைட்ல புக் பண்ணியிருந்தா, உங்க ஆர்டர் ரெஃபரன்ஸ் ஐடி அல்லது புக் பண்ணிய மொபைல் நம்பர் சொல்லுங்க!";
+      const notFoundReply = "Mannichukkaanga, antha vivaragathula active booking ethuvaum kidaikkala. Neengal websitela book pannirundhaal, ungal order reference ID athava book panniya mobile number sollunga!";
       const responsePayload = {
         found: false,
         query: rawInput,
@@ -1171,15 +1051,11 @@ app.all(['/api/order-partner-check', '/api/lookup-booking-by-phone', '/api/looku
     const scheduledSlot = `${booking.preferredDate || 'Upcoming'} at ${booking.preferredTime || 'scheduled time'}`;
     const status = booking.status || 'Team Assigned';
 
-    let cleanService = serviceType;
-    if (cleanService.includes('(')) cleanService = cleanService.split('(')[0].trim();
-    if (/^\d+\s*services/i.test(cleanService)) cleanService = 'ஹோம் டீப் கிளீனிங்';
-
     let spokenReply = '';
     if (partnerName) {
-      spokenReply = `வணக்கம்! உங்க புக்கிங் உறுதியாகியுள்ளது. சேவை: ${cleanService}. கிளீனிங் ஸ்பெஷலிஸ்ட் ${partnerName} ஒதுக்கப்பட்டிருக்காங்க. நேரம்: ${scheduledSlot}. மொத்த கட்டணம் ${booking.total || 499} ரூபாய். முன்பணம் தேவையில்லை, வேலை முடிஞ்ச பிறகு கொடுத்தா போதும்!`;
+      spokenReply = `Ungal ${serviceType} booking confirmed! Neram: ${scheduledSlot}. Ungal cleaning specialist ${partnerName} assign aagiyirukkaanga. Avanga kuritha nerathukku vandhuduvaaanga!`;
     } else {
-      spokenReply = `வணக்கம்! உங்க புக்கிங் உறுதியாகியுள்ளது. சேவை: ${cleanService}. நேரம்: ${scheduledSlot}. கிளீனிங் ஸ்பெஷலிஸ்ட் விரைவில் ஒதுக்கப்பட்டு அழைக்கப்படுவார்!`;
+      spokenReply = `Ungal ${serviceType} booking pathaivaagiyadhu! Neram: ${scheduledSlot}. Cleaning specialist ippo assign aagittiru kkaanga. Virainthu thegalarvaar!`;
     }
 
     // Trigger instant urgent WhatsApp alert to the assigned partner if caller is escalating
@@ -1233,6 +1109,7 @@ app.post('/api/send-partner-assigned', async (req, res) => {
       `📅 *Scheduled Slot:* ${date} (${time})\n\n` +
       `🛡️ *Customer Privacy:* உங்களுடைய பாதுகாப்பிற்காக Partner-ஓட Personal Number மறைக்கப்பட்டுள்ளது.\n` +
       `📞 *VS Relay Support (Saral):* ${CONFIG.SUPPORT_PHONE}\n\n` +
+      `💳 *Online Payment (Zero Advance / Post-Service):* https://razorpay.me/@vshomecleaningservices\n` +
       `🔍 *Live Tracking:* ${CONFIG.TRACKING_BASE_URL}?id=${ref}`;
 
     await sendWhatsAppMessage(cPhone, custMsg);
@@ -1245,8 +1122,7 @@ app.post('/api/send-partner-assigned', async (req, res) => {
         `📋 *Job Ref:* ${ref}\n` +
         `🛠️ *Service:* ${service || 'Cleaning'}\n` +
         `📅 *Date & Slot:* ${date} (${time})\n\n` +
-        `📲 தயவுசெய்து உங்கள் **VS Partner App**-ஐ திறந்து வேலையை Accept செய்யவும்!\n` +
-        `Partner App: http://localhost:5173/`;
+        `📲 தயவுசெய்து உங்கள் **VS Partner App**-ஐ திறந்து வேலையை Accept செய்யவும்!`;
 
       await sendWhatsAppMessage(pPhone, partMsg);
       logDispatch('Job Alert (Partner)', pPhone, `Job: ${ref}`, 'Delivered');
@@ -1254,7 +1130,33 @@ app.post('/api/send-partner-assigned', async (req, res) => {
 
     res.json({ success: true, ref, partnerName });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/notify-partner-job', async (req, res) => {
+  try {
+    const { partnerUid, partnerPhone, jobId, serviceType, customerName, area, date, time, price, netEarnings } = req.body;
+    const phone = normalizePhone(partnerPhone || FOUNDER_CONFIG.FOUNDER_PHONE || '916383458190');
+
+    const alertMsg = `🚨 *NEW EXCLUSIVE CLEANING JOB ALERT!* 🚨\n\n` +
+      `வணக்கம் Partner! உங்களுக்கு புதிய கிளீனிங் வேலை அசைன் செய்யப்பட்டுள்ளது.\n\n` +
+      `🛠️ *Service:* ${serviceType || 'Deep Cleaning'}\n` +
+      `👤 *Customer:* ${customerName || 'Customer'}\n` +
+      `📍 *Location:* ${area || 'Chennai'}\n` +
+      `📅 *Date & Slot:* ${date || 'Today'} (${time || 'Immediate'})\n` +
+      `💵 *Guaranteed Payout:* ₹${netEarnings || Math.round((price || 2400) * 0.7)}\n\n` +
+      `📲 *உடனே உங்கள் VS Partner App-ஐ திறந்து Offer முடியுமுன் Accept செய்யுங்கள்!*`;
+
+    if (phone) {
+      await sendWhatsAppMessage(phone, alertMsg);
+      logDispatch('Urgent Job Alert (Partner WhatsApp)', phone, `Job: ${jobId}`, 'Delivered');
+    }
+
+    res.json({ success: true, jobId, phone });
+  } catch (err) {
+    console.error('notify-partner-job error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
