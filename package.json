@@ -13,9 +13,12 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "node-cron": "^4.6.0",
     "pino": "^10.4.0",
     "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "razorpay": "^2.9.8",
+    "resend": "^6.37.0"
   },
   "engines": {
     "node": ">=18.0.0"
