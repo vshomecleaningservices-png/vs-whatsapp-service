@@ -16,8 +16,22 @@ try {
   try { Razorpay = require('./node_modules/razorpay'); } catch (e2) {}
 }
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+let resendInstance = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+async function getResendClient() {
+  if (resendInstance) return resendInstance;
+  try {
+    const res = await fetch('https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/resend_key.json');
+    const key = await res.json();
+    if (key && typeof key === 'string' && key.startsWith('re_')) {
+      resendInstance = new Resend(key);
+      return resendInstance;
+    }
+  } catch (e) {
+    console.error('[Resend Key Error]:', e.message);
+  }
+  return null;
+}
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
@@ -284,6 +298,12 @@ async function sendBookingConfirmationEmail(data) {
       bodyHtml,
       email: recipientEmail
     });
+
+    const resend = await getResendClient();
+    if (!resend) {
+      console.log('[Notice] Resend API key not configured, skipping email dispatch.');
+      return { success: false, reason: 'No Resend Key' };
+    }
 
     const res = await resend.emails.send({
       from: SENDER_EMAIL,
