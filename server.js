@@ -122,6 +122,7 @@ function normalizePhone(phone) {
 // FIREBASE REALTIME CLOUD SESSION PERSISTENCE (24/7 Zero Logout)
 // =========================================================================
 const FIREBASE_SESSION_URL = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app/bookingLookup/wa_session.json';
+const FIREBASE_DB = 'https://vs-home-cleaning-services-default-rtdb.asia-southeast1.firebasedatabase.app';
 
 async function restoreSessionFromFirebase(authDir) {
   try {
@@ -243,6 +244,15 @@ async function startWhatsAppSocket() {
   sock.ev.on('messages.upsert', async (m) => {
     if (m.type === 'notify') {
       for (const msg of m.messages) {
+        // If human admin/owner sends message to customer, activate Human Takeover (mute bot)
+        if (msg.key.fromMe && msg.key.remoteJid && !msg.key.remoteJid.includes('@g.us')) {
+          const peerPhone = msg.key.remoteJid.split('@')[0];
+          if (saralAgent && typeof saralAgent.muteBotForCustomer === 'function') {
+            saralAgent.muteBotForCustomer(peerPhone, 4);
+          }
+          continue;
+        }
+
         if (!msg.key.fromMe && msg.key.remoteJid && !msg.key.remoteJid.includes('@g.us')) {
           const msgId = msg.key?.id;
           if (msgId && processedMsgIds.has(msgId)) continue;
@@ -1364,9 +1374,123 @@ app.post('/api/trigger-sos', async (req, res) => {
   res.json(result);
 });
 
-// Periodic background scan for Firebase emergency issues every 60s
+// =========================================================================
+// 24/7 AUTONOMOUS BACKGROUND AUTO-ASSIGNMENT ENGINE
+// Runs continuously on Render cloud even when Admin Dashboard is closed
+// =========================================================================
+async function run247AutoAssignment() {
+  try {
+    const [bRes, pRes] = await Promise.all([
+      fetch(`${FIREBASE_DB}/bookings.json`),
+      fetch(`${FIREBASE_DB}/partners.json`)
+    ]);
+    const bookings = await bRes.json();
+    const partners = await pRes.json();
+
+    if (!bookings || typeof bookings !== 'object' || bookings.error) return;
+    if (!partners || typeof partners !== 'object' || partners.error) return;
+
+    for (const [ref, b] of Object.entries(bookings)) {
+      if (!b) continue;
+      const isUnassigned = !b.assignedTo || b.status === 'Pending Assignment' || b.status === 'Booking Received';
+      if (!isUnassigned) continue;
+      if (b.status === 'Completed' || b.status === 'Cancelled') continue;
+
+      const declined = b.declinedPartners || {};
+      const eligiblePartners = Object.entries(partners).filter(([uid, p]) => {
+        if (!p) return false;
+        if (declined[uid]) return false;
+        const isActive = p.accountStatus === 'active' || p.verificationStatus === 'verified' || !p.accountStatus;
+        return isActive;
+      });
+
+      if (eligiblePartners.length === 0) continue;
+
+      const selectedPartner = eligiblePartners[0];
+      const partnerUid = selectedPartner[0];
+      const partnerData = selectedPartner[1];
+      const partnerName = partnerData.name || 'Cleaning Specialist';
+      const partnerPhone = partnerData.phone || partnerData.phoneNumber || CONFIG.ADMIN_PHONE;
+
+      console.log(`[24/7 Auto-Assign] Assigning booking ${ref} to partner ${partnerName} (${partnerUid})...`);
+
+      const jobPayload = {
+        bookingRef: ref,
+        serviceType: b.serviceType || (b.items && b.items[0] && b.items[0].name) || 'Home Deep Cleaning',
+        category: 'cleaning',
+        customerName: b.name || 'Customer',
+        customerPhone: b.mobile || '',
+        address: b.address || 'Chennai',
+        date: b.preferredDate || 'Upcoming',
+        time: b.preferredTime || 'Scheduled Slot',
+        price: b.totalAmount || b.total || 499,
+        serviceValue: b.totalAmount || b.total || 499,
+        status: 'pending',
+        assignedTo: partnerUid,
+        assignedPartnerId: partnerUid,
+        assignedPartnerName: partnerName,
+        assignedPartnerMobile: partnerPhone,
+        createdAt: Date.now(),
+        bookedVia: '24/7 Autonomous Auto-Assign'
+      };
+
+      await fetch(`${FIREBASE_DB}/partnerJobs/${partnerUid}/${ref}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(jobPayload)
+      });
+
+      await fetch(`${FIREBASE_DB}/bookings/${ref}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignedTo: partnerUid,
+          assignedPartnerId: partnerUid,
+          assignedPartnerName: partnerName,
+          assignedPartnerMobile: partnerPhone,
+          status: 'Team Assigned',
+          autoAssignment: {
+            state: 'assigned',
+            partnerUid,
+            partnerName,
+            assignedAt: Date.now(),
+            engine: '24/7 Render Cloud'
+          }
+        })
+      });
+
+      await fetch(`${FIREBASE_DB}/bookingLookup/${ref}.json`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignedTo: partnerUid,
+          assignedPartnerName: partnerName,
+          assignedPartnerMobile: partnerPhone,
+          status: 'Team Assigned'
+        })
+      });
+
+      const pMsg = `🚨 *NEW CLEANING JOB ASSIGNED* 🚨\n\n` +
+        `வணக்கம் *${partnerName}*! புதிய கிளீனிங் ஆர்டர் வந்துள்ளது.\n\n` +
+        `📋 *Ref:* ${ref}\n` +
+        `👤 *Customer:* ${b.name || 'Customer'}\n` +
+        `🛠️ *Service:* ${jobPayload.serviceType}\n` +
+        `📅 *Date:* ${jobPayload.date} (${jobPayload.time})\n` +
+        `📍 *Address:* ${jobPayload.address}\n\n` +
+        `📲 உங்கள் *VS Partner App*-ல் பார்த்து உடனே Accept செய்யவும்!`;
+      await sendWhatsAppMessage(partnerPhone, pMsg);
+      console.log(`[24/7 Auto-Assign] Booking ${ref} successfully auto-assigned to ${partnerName}!`);
+    }
+  } catch (err) {
+    console.error('[24/7 Auto-Assign Error]:', err.message);
+  }
+}
+
+// Periodic background scans: SOS issues & 24/7 Auto-Assignment
+setTimeout(() => run247AutoAssignment(), 15000);
 setInterval(() => {
   scanForEmergencyIssues();
+  run247AutoAssignment();
 }, 60 * 1000);
 
 // Start Express Server

@@ -17,7 +17,8 @@ try {
 }
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const resend = new Resend(RESEND_API_KEY);
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_live_TuqvYRynPGvAma';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'sdGrGxE4BhK95aPj8oNT1vbq';
 
