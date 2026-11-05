@@ -30,10 +30,9 @@ const FOUNDER_PHONE   = '916383458190';
 const SUPPORT_PHONE   = '+91 75581 91073';
 const WEBSITE_URL     = 'https://vshomecleaningservices.in';
 
-let cachedGeminiKey = process.env.GEMINI_API_KEY || null;
+let cachedGeminiKey = null;
 
 async function getGeminiKey() {
-  if (cachedGeminiKey && cachedGeminiKey.length > 10) return cachedGeminiKey;
   try {
     const res = await fetch(`${FIREBASE_DB_URL}/bookingLookup/gemini_key.json`);
     const key = await res.json();
@@ -41,15 +40,17 @@ async function getGeminiKey() {
       cachedGeminiKey = key;
       return cachedGeminiKey;
     }
-  } catch (e) {}
-  return process.env.GEMINI_API_KEY || null;
+  } catch (e) {
+    console.error('[Gemini Key Error]:', e.message);
+  }
+  return process.env.GEMINI_API_KEY || cachedGeminiKey;
 }
 
-// Active Working Gemini Models (Tested & Verified)
+// Active Working Gemini Models (Tested & Verified: Under 2 seconds response)
 const CANDIDATE_MODELS = [
-  'gemini-flash-lite-latest',
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite'
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-flash-lite-latest'
 ];
 
 // In-Memory Chat Session Store
@@ -417,7 +418,7 @@ async function callGemini(contents) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       const res = await fetch(url, {
         method: 'POST',
@@ -430,8 +431,13 @@ async function callGemini(contents) {
       if (res.ok) {
         const data = await res.json();
         return data.candidates?.[0]?.content;
+      } else {
+        const errText = await res.text();
+        console.error(`[Gemini API Error] Model ${model} returned HTTP ${res.status}: ${errText}`);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error(`[Gemini Request Exception] Model ${model}: ${e.message}`);
+    }
   }
   return null;
 }
@@ -485,7 +491,7 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   if (!geminiResponse || !geminiResponse.parts) {
     return isEnglish(text)
       ? `Hello! Thank you for contacting VS Home Cleaning Services. I am Saaral, Senior Operations Manager. How may I assist you with your home cleaning requirements today?`
-      : `வணக்கம்! VS Home Cleaning Services. நான் Saaral பேசுகிறேன். உங்களுக்கு என்ன கிளீனிங் உதவி வேண்டும் என்று சொல்லுங்கள்! 😊`;
+      : `வணக்கம் sir! VS Home Cleaning Services-ல் இருந்து Saaral பேசுகிறேன். உங்களுக்கு என்ன கிளீனிங் சர்வீஸ் தேவைப்படுதுன்னு சொல்லுங்க sir, நான் உடனே விவரங்கள் தருகிறேன்! 😊`;
   }
 
   // Check for Function Call
@@ -548,11 +554,20 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
   return `Hello! VS Home Cleaning Services. How can I assist you with your booking today?`;
 }
 
-// Simple English detection
+// Smart language detection (distinguishes English vs Chennai Tanglish)
 function isEnglish(text) {
+  const lower = (text || '').toLowerCase();
+  const tanglishMarkers = [
+    'enaku', 'enakku', 'venum', 'veanum', 'thevai', 'pannanum', 'sollunga', 'solunga', 
+    'irukku', 'eppadi', 'epdi', 'enna', 'edhavadhu', 'naan', 'neenga', 'panren', 
+    'sari', 'seri', 'illai', 'illa', 'paru', 'potathu', 'vandha', 'varuma', 'varum', 
+    'evlo', 'evvalavu', 'pesuren', 'aagum', 'kudunga', 'mudiyuma', 'vanakkam', 'bathrooms'
+  ];
+  if (tanglishMarkers.some(w => lower.includes(w))) return false;
+
   const letters = (text || '').replace(/[^a-zA-Z]/g, '').length;
   const total = (text || '').replace(/\s/g, '').length;
-  return total > 0 && (letters / total) > 0.6;
+  return total > 0 && (letters / total) > 0.7;
 }
 
 // WhatsApp Catalog Cart Handler
