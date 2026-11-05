@@ -30,6 +30,9 @@ const FOUNDER_PHONE   = '916383458190';
 const SUPPORT_PHONE   = '+91 75581 91073';
 const WEBSITE_URL     = 'https://vshomecleaningservices.in';
 
+let emailService = null;
+try { emailService = require('./email-service'); } catch (e) {}
+
 let cachedGeminiKey = null;
 
 async function getGeminiKey() {
@@ -153,11 +156,14 @@ async function saveConfirmedBooking(details, notifier) {
   const mobile = cleanMobDigits.length >= 10 ? cleanMobDigits.slice(-10) : '7200910738';
   const total = Number(details.price) || 3999;
   const serviceType = details.serviceType || 'Home Deep Cleaning';
+  const customerEmail = details.email || details.customerEmail || '';
 
   const bookingRecord = {
     ref,
-    name: details.name || 'Customer',
-    customerName: details.name || 'Customer',
+    name: details.name || details.customerName || 'Customer',
+    customerName: details.name || details.customerName || 'Customer',
+    email: customerEmail,
+    customerEmail,
     mobile,
     customerMobile: mobile,
     serviceType,
@@ -183,6 +189,7 @@ async function saveConfirmedBooking(details, notifier) {
   const lookupRecord = {
     ref,
     customerName: bookingRecord.name,
+    customerEmail,
     customerMobile: mobile,
     serviceType,
     address: bookingRecord.address,
@@ -222,6 +229,18 @@ async function saveConfirmedBooking(details, notifier) {
       body: JSON.stringify({ type: 'new_job', bookingRef: ref, customerName: bookingRecord.name, customerPhone: mobile, serviceType, date: bookingRecord.preferredDate, time: bookingRecord.preferredTime, price: total, createdAt: Date.now(), read: false })
     })
   ]);
+
+  // Send luxury official booking confirmation email with invoice & coupon
+  if (customerEmail && emailService && typeof emailService.sendBookingConfirmationEmail === 'function') {
+    emailService.sendBookingConfirmationEmail({
+      ...bookingRecord,
+      id: ref,
+      items: [{ name: serviceType, price: total, qty: 1 }],
+      totalAmount: total,
+      scheduledDate: bookingRecord.preferredDate,
+      scheduledTime: bookingRecord.preferredTime
+    }).catch(err => console.error('[Auto-Email Error]:', err.message));
+  }
 
   if (notifier) {
     const pClean = partner.phone.replace(/\D/g, '');
@@ -354,14 +373,16 @@ CRITICAL COMMUNICATION DIRECTIVES:
 • Window Cleaning: Standard up to 4×4 ft ₹349 | Large above 4×4 ft ₹449
 • Sink & Under-sink Cleaning: ₹79
 
-4. BOOKING CONVERSATION FLOW:
+4. BOOKING CONVERSATION FLOW (PROFESSIONAL & REASSURING):
 - When customer asks about a category (e.g. bathroom, kitchen, sofa, or full house), explain the options clearly, highlight the benefits (e.g. Classic vs Premium with machine scrubbing), and quote exact rates.
-- When customer wants to book, politely collect:
-  1. Exact Service Type & BHK/Quantity
-  2. Chennai Address with Area & Pincode
-  3. Preferred Date & Time Slot
+- When customer wants to book or agrees to a service, ALWAYS explicitly ask for these 3 items in a numbered list:
+  1. Complete Chennai Address with Door No, Area, Landmark & 6-digit Pincode
+  2. Preferred Service Date & Arrival Time Slot
+  3. Email ID (state: "Official Booking Confirmation, Service Bill Receipt & Festive Discount Coupon anuppa unga Email ID sollunga sir")
+  (NOTE: If customer does not have an email or skips it, do not force them; proceed with booking confirmation).
 - NEVER force "Tomorrow"! Listen to the customer's specified date (e.g., 21st December 2026, Dec 21, Saturday, etc.).
-- Once the customer confirms the details, call the FUNCTION: confirm_service_booking.
+- Once customer confirms details, call FUNCTION: confirm_service_booking.
+- In the confirmation response, remove all customer fear: explicitly reassure them that the booking is 100% OFFICIALLY CONFIRMED, zero advance is needed (pay only after full inspection), their Job Security OTP is provided, and their official invoice has been dispatched.
 - If customer has an emergency, delay, or complaint, comfort them and call FUNCTION: escalate_to_founder.`;
 
 // Function declarations for Gemini Tool Calling
@@ -503,27 +524,32 @@ async function processCustomerMessage(phone, userText, senderPushName, notifier)
       args.phone = p10;
       const booked = await saveConfirmedBooking(args, notifier);
 
+      const emailLine = booked.email ? `📧 *Official Invoice & Coupon:* Sent to ${booked.email}\n` : '';
+      const emailLineTa = booked.email ? `📧 *Official Invoice & Coupon:* உங்கள் ${booked.email}-க்கு அனுப்பப்பட்டுள்ளது\n` : '';
+
       const confirmMsg = isEnglish(text)
-        ? `🎉 *Your Booking is Officially Confirmed!* (Ref: *${booked.ref}*)\n\n` +
-          `Specialist Team has been locked for your home!\n\n` +
+        ? `🎉 *Your Booking is 100% Officially Confirmed!* (Ref: *${booked.ref}*)\n\n` +
+          `Relax! Your service slot is locked and our specialized team is assigned for your home.\n\n` +
           `🛠️ *Service:* ${booked.serviceType}\n` +
           `📅 *Date & Slot:* ${booked.preferredDate} (${booked.preferredTime})\n` +
-          `💰 *Total Amount:* ₹${booked.total} (Zero advance — Pay after inspection)\n` +
-          `📍 *Address:* ${booked.address}\n\n` +
-          `🔐 *Your Job Security OTP:* *${booked.jobOtp}*\n` +
+          `💰 *Total Amount:* ₹${booked.total} (Zero advance — Pay after full inspection)\n` +
+          `📍 *Address:* ${booked.address}\n` +
+          emailLine +
+          `\n🔐 *Your Job Security OTP:* *${booked.jobOtp}*\n` +
           `(Share this OTP with our cleaning supervisor only when they arrive at your doorstep on ${booked.preferredDate}).\n\n` +
           `🔍 *Live Tracking Link:*\n${WEBSITE_URL}/track-booking.html?id=${booked.ref}\n\n` +
-          `Thank you for choosing VS Home Cleaning Services! ✨`
-        : `🎉 *உங்கள் புக்கிங் வெற்றிகரமாக உறுதியானது!* (Ref: *${booked.ref}*)\n\n` +
-          `உங்களுக்காக எங்கள் தொழில்முறை கிளீனிங் குழு ஒதுக்கப்பட்டுள்ளது!\n\n` +
+          `No worries at all sir! Everything is set and our team will be there on time. Thank you for choosing VS Home Cleaning Services! ✨`
+        : `🎉 *உங்கள் புக்கிங் 100% அதிகாரப்பூர்வமாக உறுதியானது!* (Ref: *${booked.ref}*)\n\n` +
+          `கவலையே வேண்டாம் sir! உங்களுக்கான ஸ்லாட் லாக் செய்யப்பட்டு, தொழில்முறை கிளீனிங் குழு ஒதுக்கப்பட்டுவிட்டது.\n\n` +
           `🛠️ *சேவை:* ${booked.serviceType}\n` +
           `📅 *தேதி & நேரம்:* ${booked.preferredDate} (${booked.preferredTime})\n` +
-          `💰 *தொகை:* ₹${booked.total} (முன்பணம் ஏதுமில்லை — வேலை முடிந்த பின் செலுத்தலாம்)\n` +
-          `📍 *முகவரி:* ${booked.address}\n\n` +
-          `🔐 *Job Security OTP:* *${booked.jobOtp}*\n` +
+          `💰 *தொகை:* ₹${booked.total} (முன்பணம் ஏதுமில்லை — வேலை முடிந்த பின் சரிபார்த்து செலுத்தலாம்)\n` +
+          `📍 *முகவரி:* ${booked.address}\n` +
+          emailLineTa +
+          `\n🔐 *Job Security OTP:* *${booked.jobOtp}*\n` +
           `(ஸ்பெஷலிஸ்ட் உங்கள் வீட்டிற்கு வந்தவுடன் இந்த OTP-யை பகிரவும்).\n\n` +
           `🔍 *Live Tracking Link:*\n${WEBSITE_URL}/track-booking.html?id=${booked.ref}\n\n` +
-          `நன்றி! எங்கள் குழு குறித்த நேரத்தில் வந்துவிடும். 🧹✨`;
+          `எந்த சந்தேகமும் வேண்டாம் sir, குறித்த நேரத்தில் எங்கள் குழு வந்துவிடும். நன்றி! 🧹✨`;
 
       session.history.push({ role: 'user', text });
       session.history.push({ role: 'model', text: confirmMsg });
